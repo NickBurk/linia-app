@@ -6,6 +6,10 @@ import cv2
 import numpy as np
 from scipy.ndimage import binary_erosion
 
+from lineament_analyzer.algorithms.results import DetectionResult, build_detection_result
+from lineament_analyzer.core.windowed import check_cancel
+from lineament_analyzer.data.dem import Dem
+
 
 @dataclass(frozen=True)
 class LsdParameters:
@@ -50,3 +54,27 @@ def detect(image: np.ndarray, valid: np.ndarray, params: LsdParameters) -> np.nd
         if inside.all() and safe[y, x].all():
             accepted.append(segment)
     return np.asarray(accepted, dtype=float).reshape(-1, 4)
+
+
+class LsdDetector:
+    """Shared-interface adapter around the existing OpenCV LSD primitive."""
+
+    algorithm_id = "lsd"
+
+    def run(
+        self, dem: Dem, parameters: LsdParameters, *, progress=None, cancel=None
+    ) -> DetectionResult:
+        check_cancel(cancel)
+        if progress is not None:
+            progress(0)
+        pixels = detect(dem.values, dem.valid, parameters)
+        check_cancel(cancel)
+        result = build_detection_result(
+            dem,
+            pixels,
+            algorithm_id=self.algorithm_id,
+            parameters=parameters,
+        )
+        if progress is not None:
+            progress(100)
+        return result

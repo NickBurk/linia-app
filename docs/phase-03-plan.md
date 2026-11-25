@@ -71,5 +71,6 @@
 
 ## Current status
 
-- Phase 0 review: in progress.
-- Phases 1–5: not started.
+- Phase 0 review: complete. The installed base `opencv-python-headless` wheel exposes LSD but not `ximgproc`; Phase 3 will therefore evaluate the contrib wheel before EDLines implementation.
+- Phase 1 shared contract: complete. Existing and new tests pass (59 total); Ruff passes. Commit: pending.
+- Phases 2–5: not started.
