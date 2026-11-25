@@ -30,3 +30,11 @@ Working branch: `feature/phase-04-postprocessing`, based on `575e8cf` from `feat
 6. Complete Python 3.11 pytest/Ruff, Linux and Windows CI, PyInstaller, Windows frozen EXE self-test and ZIP artifact publication.
 
 PHASE 05 must not begin until every PHASE 04 check has a recorded successful result or a clearly documented blocker. See [phase-04-report.md](phase-04-report.md) for the current implementation and validation record.
+
+## PHASE 04.1 — DEM loading and GUI
+
+Dedicated branch `fix/dem-loading-ui-ux` from PHASE 04. The work adds transactional
+repeatable DEM loading, opt-in last-DEM restore, persistent Qt window/language settings,
+versioned JSON projects, a docked map workspace, and lifecycle/project regression tests.
+Windows frozen runtime verification and CI results are tracked in `docs/dem-loading-fix.md`
+and `docs/gui-redesign.md`; do not begin PHASE 05 until the branch validation is recorded.

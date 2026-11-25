@@ -29,3 +29,20 @@ Filters use preview-pixel length limits, an optional axial azimuth interval and 
 Statistics count orientations in `[0, 180)` using the segment's axial orientation, so reversing endpoints does not create a second directional bin. They include a length histogram, direction bins, count, complete metric total/mean/median length when all lengths are known, footprint density per km² when a valid CRS footprint is available, and counts by combined class. No-CRS results still expose pixel-based classification and orientation, while metric lengths and density remain unknown.
 
 GUI postprocessing and statistics use the existing cancellable QThread task. Class overlays are colored by stable class ID and each class can be hidden independently. GeoJSON stays RFC 7946 WGS84 and retains source CRS metadata. Shapefile geometry is written in the source CRS with `.prj` and UTF-8 `.cpg` sidecars; a `.metadata.json` companion preserves complete parameters and provenance beyond the DBF width limit.
+
+## GUI state and projects
+
+`gui.project` serializes versioned `.laproj` JSON documents. Detection and postprocessed
+results retain pixel/source endpoints, CRS WKT, transform, shape, optional confidence,
+parameters and class properties. Project opening reads and validates JSON before starting
+a DEM worker; results are attached only after the raster is prepared and checked against
+their stored shape, transform and CRS. Writes use a sibling temporary file followed by
+an atomic replace. `QSettings` stores last DEM, language, window geometry/state, selected
+algorithm and the opt-in automatic DEM restore preference. Raster previews are loaded
+inside `rasterio.open` context managers; failed/cancelled workers never deliver a partial
+preview to the GUI, so the currently displayed DEM remains intact.
+
+The main window puts `MapCanvas` in the centre and uses dock widgets for layers and
+properties. The map keeps aspect ratio, zooms around the mouse wheel and supports drag
+panning. Layer and processing controls remain in Qt widgets, while heavy raster and
+algorithm operations retain the existing cancellable `Task` lifecycle.
