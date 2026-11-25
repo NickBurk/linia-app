@@ -5,6 +5,7 @@
 - Репозиторий: `NickBurk/linia-app`.
 - Рабочая ветка: `feature/phase-04-postprocessing`.
 - База: `575e8cf083ce2ad6235637f35c8cb2df3cf178a6` от `feature/phase-03-lineament-algorithms`.
+- Реализация: `96c01c939726caf75488dbf959557a3dbc6d915a` (`feat: add lineament postprocessing pipeline`).
 - `main` и предыдущая feature-ветка не изменялись.
 - До разработки изучены `AGENTS.md`, `docs/architecture.md`, `docs/plan.md`, `docs/phase-03-plan.md` и `docs/algorithms.md`.
 
@@ -49,14 +50,30 @@ Distance/length limits заданы в пикселях bounded preview, что�
 - `uv pip check`: all installed packages compatible.
 - `QT_QPA_PLATFORM=offscreen python -m lineament_analyzer.app --self-test`: exit code 0.
 - Linux PyInstaller `--onedir` build: completed; frozen Linux `--self-test`: exit code 0.
-- Linux GitHub Actions: ссылка и job conclusion — добавить после push.
-- Windows GitHub Actions, PyInstaller, frozen EXE self-test и ZIP artifact: ссылка и artifact — добавить после завершения workflow.
+- GitHub Actions run [45709625529](https://github.com/NickBurk/linia-app/actions/runs/45709625529), commit `96c01c9`: **passed**. Linux `test` и Windows `windows-exe` jobs completed successfully.
+- В обоих CI jobs: Python 3.11.18, `pip check`, `pytest -q` (**127 passed, 3 warnings**), `ruff check .` и installed self-test — успешно.
+- Windows job: PyInstaller build passed; `qwindows.dll` найден; frozen Windows EXE self-test passed; ZIP assembly and upload passed.
+- Windows ZIP artifact [`LineamentAnalyzer-Windows`](https://api.github.com/repos/NickBurk/linia-app/actions/artifacts/15065889395/zip), ID `15065889395`, 189,397,006 bytes, SHA-256 `14f4aa23501c959588a759df83cf030aa8c54abc1a73b42361035631e6a9f8e0`, expires 2027-02-23 22:01 UTC.
+- Actions annotation: GitHub reported that `actions/checkout@v4` and `actions/setup-python@v5` target Node.js 20, which is deprecated and forced to Node.js 24 on the current runner. Jobs still passed.
 
 Проверки, которые не запускались или не завершились успешно, не считаются пройденными.
 
 ## Изменённые файлы
 
-Итоговый перечень и SHA исходного commit будут зафиксированы после проверки ветки.
+- `README.md`
+- `docs/algorithms.md`
+- `docs/architecture.md`
+- `docs/plan.md`
+- `docs/phase-04-report.md`
+- `pyproject.toml`
+- `src/lineament_analyzer/algorithms/postprocessing.py`
+- `src/lineament_analyzer/algorithms/results.py`
+- `src/lineament_analyzer/export/geojson.py`
+- `src/lineament_analyzer/export/shapefile.py`
+- `src/lineament_analyzer/gui/window.py`
+- `tests/test_gui_tasks.py`
+- `tests/test_postprocessing.py`
+- `tests/test_shapefile_export.py`
 
 ## Ограничения
 
@@ -66,4 +83,4 @@ Distance/length limits заданы в пикселях bounded preview, что�
 - Footprint density per km² использует геодезическую площадь четырёх углов растра; для очень больших/высокоширотных растров это оценка.
 - Для Shapefile сверх стандартных sidecar файлов необходим `.metadata.json`, чтобы сохранить полные параметры без обрезания ограниченными DBF-полями.
 - Проверки синтетические; геологическая точность на полевых/эталонных данных и качество ручной интерпретации не оценивались.
-- PHASE 05 не начинается до завершения всех перечисленных PHASE 04 проверок.
+- PHASE 05 не начиналась. Все перечисленные PHASE 04 проверки завершены; дальше работа остаётся на PHASE 04/её ветке до отдельного запроса.
