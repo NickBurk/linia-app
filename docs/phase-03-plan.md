@@ -73,7 +73,7 @@
 
 - Phase 0 review: complete. The installed base `opencv-python-headless` wheel exposes LSD but not `ximgproc`; Phase 3 will therefore evaluate the contrib wheel before EDLines implementation.
 - Phase 1 shared contract: complete. Existing and new tests pass (59 total); Ruff passes. Commit: `094ef32`.
-- Phase 2 Canny and Probabilistic Hough: implemented as standalone components and exposed as a selectable Canny–Hough line pipeline. Synthetic coverage includes direct component tests and geospatial end-to-end cases. Initial full suite: 76 passed, Ruff passed. Component separation was added during final review and is being rechecked.
-- Phase 3 EDLines: complete. Independent detector, contrib dependency, real-backend synthetic tests and explicit missing-backend behavior are implemented. Full suite: 99 passed; Ruff and installed self-test passed. Commit: pending.
-- Phase 4 GUI/export: implemented and covered by localized workflow, comparison, cancellation, geospatial export, provenance and legacy compatibility tests. Full suite currently: 103 passed; Ruff passed. Final stage commit is pending.
-- Phase 5 release validation: not started.
+- Phase 2 Canny and Probabilistic Hough: complete. Standalone components are exposed as a selectable Canny–Hough line pipeline. Synthetic coverage includes direct component tests and geospatial end-to-end cases. Final full suite: 117 passed; Ruff passed. Commits: `482fb4c`, `ef5703f`.
+- Phase 3 EDLines: complete. Independent detector, contrib dependency, real-backend synthetic tests and explicit missing-backend behavior are implemented. Commit: `0afa093`.
+- Phase 4 GUI/export: complete. Localized controls, background execution/cancellation, result comparison, geospatial provenance export and legacy LSD compatibility are covered. Commit: `1ad3c3a`.
+- Phase 5 release validation: complete on `ef5703f`. Python 3.11.18: pytest 117 passed, Ruff passed, installed self-test passed. GitHub Actions run [45704158076](https://github.com/NickBurk/linia-app/actions/runs/45704158076) passed both Linux and Windows jobs, including PyInstaller, frozen EXE self-test and ZIP upload. Artifact [LineamentAnalyzer-Windows](https://github.com/NickBurk/linia-app/actions/runs/45704158076/artifacts/15065165626), ID `15065165626`, size 189,317,560 bytes, expires 2027-02-23.
