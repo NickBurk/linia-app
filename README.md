@@ -6,7 +6,7 @@
 
 Python 3.11 required. Create a virtual environment and run `pip install -e '.[dev]'`. Start with `lineament-analyzer`. Run `pytest` and `ruff check .`.
 
-The initial prototype loads a single-band DEM, displays it, calculates hillshade, slope, aspect and TPI, and detects line segments with OpenCV LSD. Detected lines are image candidates requiring geological interpretation.
+The initial prototype loads a single-band DEM, displays it, calculates hillshade, slope, aspect and TPI, detects line segments with OpenCV LSD, and exports those segments to WGS84 GeoJSON. Detected lines are image candidates requiring geological interpretation.
 
 ## Status
 

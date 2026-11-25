@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
@@ -5,6 +7,7 @@ from rasterio.transform import from_origin
 from lineament_analyzer.algorithms.lsd import LsdParameters, detect
 from lineament_analyzer.core.terrain import derivative
 from lineament_analyzer.data.dem import load_dem
+from lineament_analyzer.export.geojson import export_geojson
 
 
 def test_dem_derivatives_and_lsd(tmp_path):
@@ -23,6 +26,11 @@ def test_dem_derivatives_and_lsd(tmp_path):
     lines = detect(values, dem.valid, LsdParameters(min_length=15))
     assert len(lines) > 0
     assert np.isfinite(lines).all()
+    output = tmp_path / "lines.geojson"
+    export_geojson(output, dem, lines[:1])
+    feature = json.loads(output.read_text())["features"][0]
+    assert feature["geometry"]["type"] == "LineString"
+    assert abs(feature["geometry"]["coordinates"][0][0]) <= 180
 
 
 def test_gui_language():

@@ -21,12 +21,13 @@ from PySide6.QtWidgets import (
 from lineament_analyzer.algorithms.lsd import LsdParameters, detect
 from lineament_analyzer.core.terrain import derivative
 from lineament_analyzer.data.dem import Dem, load_dem
+from lineament_analyzer.export.geojson import export_geojson
 
 TEXT = {
     "ru": ["Открыть GeoTIFF", "Слой", "Высота", "Теневой рельеф", "Уклон", "Экспозиция",
-           "TPI", "LSD", "Минимальная длина", "Линеаменты", "Язык"],
+           "TPI", "LSD", "Минимальная длина", "Линеаменты", "Язык", "Экспорт GeoJSON"],
     "en": ["Open GeoTIFF", "Layer", "Elevation", "Hillshade", "Slope", "Aspect",
-           "TPI", "LSD", "Minimum length", "Lineaments", "Language"],
+           "TPI", "LSD", "Minimum length", "Lineaments", "Language", "Export GeoJSON"],
 }
 
 
@@ -37,6 +38,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.dem: Dem | None = None
         self.image: np.ndarray | None = None
+        self.segments = np.empty((0, 4), dtype=float)
         self.language = "ru"
         self.scene = QGraphicsScene(self)
         self.view = QGraphicsView(self.scene)
@@ -52,13 +54,16 @@ class MainWindow(QMainWindow):
         self.min_length.setValue(10)
         self.detect_button = QPushButton()
         self.detect_button.clicked.connect(self.run_lsd)
+        self.export_button = QPushButton()
+        self.export_button.clicked.connect(self.save_geojson)
         self.language_label = QLabel()
         self.language_box = QComboBox()
         self.language_box.addItems(["Русский", "English"])
         self.language_box.currentIndexChanged.connect(self.change_language)
         controls = QHBoxLayout()
         for widget in (self.open_button, self.layer_label, self.layer, self.length_label,
-                       self.min_length, self.detect_button, self.language_label, self.language_box):
+                       self.min_length, self.detect_button, self.export_button,
+                       self.language_label, self.language_box):
             controls.addWidget(widget)
         layout = QVBoxLayout()
         layout.addLayout(controls)
@@ -79,6 +84,7 @@ class MainWindow(QMainWindow):
         self.length_label.setText(labels[8])
         self.detect_button.setText(labels[9])
         self.language_label.setText(labels[10])
+        self.export_button.setText(labels[11])
         selected = self.layer.currentIndex()
         self.layer.blockSignals(True)
         self.layer.clear()
@@ -91,6 +97,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "GeoTIFF", "", "GeoTIFF (*.tif *.tiff)")
         if path:
             self.dem = load_dem(path)
+            self.segments = np.empty((0, 4), dtype=float)
             self.render()
 
     def render(self) -> None:
@@ -118,8 +125,17 @@ class MainWindow(QMainWindow):
             return
         self.render()
         lines = detect(self.image, self.dem.valid, LsdParameters(self.min_length.value()))
+        self.segments = lines
         pen = QPen(Qt.GlobalColor.red)
         pen.setCosmetic(True)
         for x1, y1, x2, y2 in lines:
             self.scene.addLine(x1, y1, x2, y2, pen)
         self.statusBar().showMessage(f"LSD: {len(lines)}")
+
+    def save_geojson(self) -> None:
+        """Save current LSD candidates in WGS84 GeoJSON."""
+        if self.dem is None or len(self.segments) == 0:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "GeoJSON", "", "GeoJSON (*.geojson)")
+        if path:
+            export_geojson(path, self.dem, self.segments)
