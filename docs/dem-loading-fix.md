@@ -35,9 +35,9 @@ application, verified `qwindows.dll`, ran the frozen EXE self-test and uploaded 
 The self-test opens the same DEM twice, switches to another DEM, and exercises detectors
 and GeoJSON export in the frozen environment.
 
-GitHub Actions run: [Checks #14](https://github.com/NickBurk/linia-app/actions/runs/45716420297)
-(commit `ccc8eb4`). Windows artifact: [LineamentAnalyzer-Windows.zip](https://github.com/NickBurk/linia-app/actions/runs/45716420297/artifacts/15070042431)
-(189,412,916 bytes; SHA-256 `012ebc789fb4a7d4e738be777cae9cd2243bafa82ad97611aed30f8b467cb95f`).
+GitHub Actions run: [Checks #16](https://github.com/NickBurk/linia-app/actions/runs/45717568468)
+(commit `b8d53d8`). Windows artifact: [LineamentAnalyzer-Windows.zip](https://github.com/NickBurk/linia-app/actions/runs/45717568468/artifacts/15070661785)
+(189,414,495 bytes; SHA-256 `bd0291fb3c2d32f81d661374953be91547ceea6ff5c49315a0bf5ca63f39ec5d`).
 
 The exact original user failure remains unconfirmed because no affected DEM, prior EXE,
 or reproduction trace was provided. The new EXE's automated lifecycle test passed, but
