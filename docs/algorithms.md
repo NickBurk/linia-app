@@ -21,7 +21,7 @@ score.
 | Method | Controls | Notes |
 | --- | --- | --- |
 | LSD | Minimum preview-pixel length; detector scale is 0.8 | Existing OpenCV LSD primitive. Retains the phase 02 Nx4 `detect` API. |
-| Canny + Hough | Canny low/high threshold (normalized 8-bit intensity), aperture, L2 gradient, Hough vote threshold, minimum length (m), maximum gap (m) | Canny detects edges; `HoughLinesP` returns candidates. Map-unit lengths are converted using the geometric-mean local ground sample distance and output length is filtered geodesically. |
+| Canny + Hough | Canny low/high threshold (normalized 8-bit intensity), aperture, L2 gradient, Hough vote threshold, minimum length (m), maximum gap (m) | Canny edge detection (`canny.detect_edges`) and Probabilistic Hough (`hough.detect_lines`) are standalone components with independent parameter dataclasses. The GUI selects their line-extraction pipeline. Map-unit lengths are converted using the geometric-mean local ground sample distance and output length is filtered geodesically. |
 | EDLines | Sigma, gradient/anchor threshold, minimum path length (px), minimum segment length (m), fit/max error, maximum line separation (px), NFA validation, PF mode, edge operator, scan interval | Independent OpenCV contrib Edge Drawing `detectLines` backend. It has its own normalization and parameter set and never falls back to Canny–Hough. |
 
 NoData pixels are extended from their nearest valid sample only to prevent an

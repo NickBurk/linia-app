@@ -2,10 +2,10 @@
 
 from dataclasses import dataclass
 
-import cv2
 import numpy as np
-from scipy.ndimage import distance_transform_edt
 
+from lineament_analyzer.algorithms.canny import CannyParameters, detect_edges
+from lineament_analyzer.algorithms.hough import HoughParameters, detect_lines
 from lineament_analyzer.algorithms.results import (
     DetectionResult,
     build_detection_result,
@@ -30,44 +30,25 @@ class CannyHoughParameters:
     max_gap_m: float = 20.0
 
     def validate(self) -> None:
-        if (
-            not np.isfinite(self.canny_low_threshold)
-            or not np.isfinite(self.canny_high_threshold)
-            or self.canny_low_threshold < 0
-            or self.canny_high_threshold <= self.canny_low_threshold
-            or self.canny_high_threshold > 255
-        ):
-            raise ValueError("Canny thresholds must satisfy 0 <= low < high <= 255")
-        if self.aperture_size not in {3, 5, 7}:
-            raise ValueError("Canny aperture size must be 3, 5 or 7")
-        if self.hough_threshold < 1:
-            raise ValueError("Hough threshold must be a positive integer")
-        if not np.isfinite(self.min_segment_length_m) or self.min_segment_length_m <= 0:
-            raise ValueError("Minimum segment length must be positive and finite")
-        if not np.isfinite(self.max_gap_m) or self.max_gap_m < 0:
-            raise ValueError("Maximum gap must be non-negative and finite")
+        self.canny.validate()
+        self.hough.validate()
 
+    @property
+    def canny(self) -> CannyParameters:
+        return CannyParameters(
+            self.canny_low_threshold,
+            self.canny_high_threshold,
+            self.aperture_size,
+            self.l2_gradient,
+        )
 
-def _normalized_raster(
-    image: np.ndarray, valid: np.ndarray
-) -> tuple[np.ndarray, np.ndarray] | None:
-    values = np.asarray(image, dtype=float)
-    mask = np.asarray(valid, dtype=bool)
-    if values.ndim != 2 or mask.shape != values.shape:
-        raise ValueError("Canny-Hough requires a 2D image and matching validity mask")
-    mask = mask & np.isfinite(values)
-    if not np.any(mask):
-        return None
-    low, high = np.percentile(values[mask], [2, 98])
-    if high <= low:
-        low, high = float(np.min(values[mask])), float(np.max(values[mask]))
-    if high <= low:
-        return None
-    values = np.where(mask, values, low)
-    scaled = np.clip((values - low) / (high - low) * 255.0, 0, 255)
-    indices = distance_transform_edt(~mask, return_distances=False, return_indices=True)
-    scaled[~mask] = scaled[tuple(indices[:, ~mask])]
-    return scaled.astype(np.uint8), mask
+    @property
+    def hough(self) -> HoughParameters:
+        return HoughParameters(
+            self.hough_threshold,
+            self.min_segment_length_m,
+            self.max_gap_m,
+        )
 
 
 def detect(
@@ -79,47 +60,30 @@ def detect(
     cancel=None,
     progress=None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return pixel endpoints, edge support fractions and normalized edges."""
+    """Return pixel endpoints, edge support fractions and the Canny edge image."""
     parameters.validate()
     if not np.isfinite(pixel_size_m) or pixel_size_m <= 0:
         raise ValueError("Pixel size in metres must be positive and finite")
     check_cancel(cancel)
     if progress is not None:
         progress(0)
-    normalized = _normalized_raster(image, valid)
-    if normalized is None:
-        return np.empty((0, 4)), np.empty(0), np.zeros(np.shape(image), np.uint8)
-    raster, mask = normalized
+    edges, mask = detect_edges(image, valid, parameters.canny, cancel=cancel)
     check_cancel(cancel)
     if progress is not None:
         progress(10)
-    edges = cv2.Canny(
-        raster,
-        parameters.canny_low_threshold,
-        parameters.canny_high_threshold,
-        apertureSize=parameters.aperture_size,
-        L2gradient=parameters.l2_gradient,
-    )
-    check_cancel(cancel)
-    if progress is not None:
         progress(55)
-    min_length_px = max(1, round(parameters.min_segment_length_m / pixel_size_m))
-    max_gap_px = max(0, round(parameters.max_gap_m / pixel_size_m))
-    lines = cv2.HoughLinesP(
+    lines = detect_lines(
         edges,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=parameters.hough_threshold,
-        minLineLength=min_length_px,
-        maxLineGap=max_gap_px,
+        parameters.hough,
+        pixel_size_m=pixel_size_m,
+        cancel=cancel,
     )
-    check_cancel(cancel)
     if progress is not None:
         progress(85)
-    if lines is None:
+    if not len(lines):
         return np.empty((0, 4)), np.empty(0), edges
 
-    segments = lines.reshape(-1, 4).astype(float)
+    segments = lines
     erosion_radius = max(2, parameters.aperture_size // 2)
     safe_mask = detector_support_mask(mask, radius=erosion_radius)
     accepted, support_fractions = [], []
