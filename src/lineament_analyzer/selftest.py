@@ -51,7 +51,7 @@ def restore_in_new_process(project):
     restored = _window(errors)
     restored.open_project_path(project)
     _wait(restored, errors)
-    assert Path(restored.source) == project.parent / "input" / "synthetic.tif"
+    assert Path(restored.source).samefile(project.parent / "input" / "synthetic.tif")
     assert set(METHODS).issubset(restored.results_by_algorithm)
     assert restored.results_by_algorithm["lsd"].segments
     assert restored.parameters["layer"] == "hillshade"
@@ -62,7 +62,7 @@ def restore_in_new_process(project):
 
 def run():
     with TemporaryDirectory() as directory:
-        root = Path(directory)
+        root = Path(directory).resolve()
         dataset = generate_synthetic(root / "input", size=192, seed=7)
         second = generate_synthetic(root / "second", size=128, seed=91)
         for kind in ("slope", "aspect", "tpi"):
