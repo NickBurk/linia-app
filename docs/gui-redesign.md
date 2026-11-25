@@ -13,8 +13,9 @@ The selected language, window size/position, dock state and algorithm are stored
 Qt Settings. Users can opt in to automatic restore of the last DEM.
 
 `.laproj` is versioned JSON. It contains the DEM's absolute path, stored results and
-postprocessing results, class visibility, and display selections. Result geometry is
-restored only when raster shape, affine transform and CRS match. Project files do not copy
+postprocessing results, class visibility, display selections, and current detector and
+visible postprocessing control values. Result geometry is restored only when raster shape,
+affine transform and CRS match. Project files do not copy
 or embed source DEMs, so moving a project to another computer requires the original raster
 at its saved path. The current Data tab shows preview dimensions, CRS, resolution and
 valid elevation range; band count and explicit NoData metadata are not yet displayed.

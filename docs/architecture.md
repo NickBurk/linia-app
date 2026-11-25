@@ -41,6 +41,9 @@ an atomic replace. `QSettings` stores last DEM, language, window geometry/state,
 algorithm and the opt-in automatic DEM restore preference. Raster previews are loaded
 inside `rasterio.open` context managers; failed/cancelled workers never deliver a partial
 preview to the GUI, so the currently displayed DEM remains intact.
+Current detector and visible postprocessing control values are also stored in Qt Settings
+and `.laproj`; results additionally retain the exact detector and processing parameters
+used to produce them.
 
 The main window puts `MapCanvas` in the centre and uses dock widgets for layers and
 properties. The map keeps aspect ratio, zooms around the mouse wheel and supports drag

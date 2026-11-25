@@ -286,12 +286,16 @@ def test_project_round_trip_and_gui_language_docks(app, tmp_path):
         "detection_results": window.results_by_algorithm,
         "postprocessed_results": {},
         "class_visibility": {"example": False},
-        "display": {"algorithm": "lsd", "layer": "elevation"},
+        "display": {"algorithm": "lsd", "layer": "elevation", **window._ui_parameters()},
     })
     restored = load_project(project_file)
     assert restored["dem_path"] == str(path.resolve())
     assert restored["detection_results"]["lsd"].segments == result.segments
     assert restored["class_visibility"] == {"example": False}
+    assert restored["display"]["detector_parameters"]["min_length"] == window.min_length.value()
+    window.min_length.setValue(77)
+    window._apply_ui_parameters(restored["display"])
+    assert window.min_length.value() != 77
     assert window.property_tabs.count() == 4
     window.language_box.setCurrentIndex(1)
     assert window.property_tabs.tabText(0) == "Data"
@@ -307,12 +311,14 @@ def test_opt_in_restore_reloads_dem_and_missing_path_is_safe(app, tmp_path):
     first = MainWindow()
     first.load_path(source)
     wait_for(app, lambda: first.task is None)
+    first.min_length.setValue(23)
     first.restore_action.setChecked(True)
     first.close()
 
     restored = MainWindow()
     wait_for(app, lambda: restored.task is None)
     assert restored.source == str(source.resolve())
+    assert restored.min_length.value() == 23
     restored.close()
 
     settings = QSettings("NickBurk", "LineamentAnalyzer")

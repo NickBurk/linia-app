@@ -46,7 +46,7 @@ from lineament_analyzer.algorithms.postprocessing import (
     postprocess_result,
     summarize_results,
 )
-from lineament_analyzer.algorithms.results import DetectionResult
+from lineament_analyzer.algorithms.results import DetectionResult, parameters_dict
 from lineament_analyzer.core.windowed import check_cancel, process_dem
 from lineament_analyzer.data.dem import Dem, load_preview
 from lineament_analyzer.export.geojson import export_geojson
@@ -365,6 +365,12 @@ class MainWindow(QMainWindow):
         algorithm_index = self.algorithm_box.findData(self.settings.value("algorithm", "lsd"))
         if algorithm_index >= 0:
             self.algorithm_box.setCurrentIndex(algorithm_index)
+        saved_ui = self.settings.value("uiParameters", "")
+        if saved_ui:
+            try:
+                self._apply_ui_parameters(json.loads(saved_ui))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                self.statusBar().showMessage("Saved controls were invalid; defaults are in use")
         geometry = self.settings.value("geometry")
         if geometry:
             self.restoreGeometry(geometry)
@@ -854,6 +860,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("windowState", self.saveState())
         self.settings.setValue("algorithm", self.algorithm_box.currentData() or "lsd")
+        self.settings.setValue("uiParameters", json.dumps(self._ui_parameters()))
         if self.source:
             self.settings.setValue("lastDem", self.source)
         self.settings.sync()
@@ -956,6 +963,8 @@ class MainWindow(QMainWindow):
                 self.project_path = state.get("project_path")
                 display = state.get("display", {})
                 self.algorithm_box.setCurrentIndex(max(0, self.algorithm_box.findData(display.get("algorithm"))))
+                self._apply_ui_parameters(display)
+                self._refresh_layers()
             else:
                 self.show_error("Результаты проекта относятся к другой геометрии DEM")
         self.refresh_result_choices()
@@ -982,7 +991,8 @@ class MainWindow(QMainWindow):
                 "class_visibility": self.class_visibility,
                 "display": {"layer": self.parameters.get("layer", "elevation"),
                             "algorithm": self.algorithm_box.currentData(),
-                            "result": self.result_view_box.currentData()},
+                            "result": self.result_view_box.currentData(),
+                            **self._ui_parameters()},
             })
         except (OSError, TypeError, ValueError) as error:
             self.show_error(str(error))
@@ -1004,6 +1014,71 @@ class MainWindow(QMainWindow):
         self.pending_project = state
         if not self.load_path(state["dem_path"]):
             self.pending_project = None
+
+    def _ui_parameters(self):
+        algorithm = self.algorithm_box.currentData() or "lsd"
+        return {
+            "detector_parameters": parameters_dict(self._selected_parameters(algorithm)),
+            "postprocessing_parameters": parameters_dict(self._postprocess_parameters()),
+        }
+
+    def _apply_ui_parameters(self, state):
+        detector = state.get("detector_parameters", {})
+        algorithm = self.algorithm_box.currentData()
+        controls = {
+            "lsd": {"min_length": self.min_length},
+            "canny-hough": {
+                "canny_low_threshold": self.canny_low,
+                "canny_high_threshold": self.canny_high,
+                "aperture_size": self.canny_aperture,
+                "l2_gradient": self.canny_l2,
+                "hough_threshold": self.hough_votes,
+                "min_segment_length_m": self.canny_min_length,
+                "max_gap_m": self.canny_max_gap,
+            },
+            "edlines": {
+                "sigma": self.ed_sigma, "gradient_threshold": self.ed_gradient,
+                "anchor_threshold": self.ed_anchor, "min_path_length_px": self.ed_path,
+                "min_segment_length_m": self.ed_min_length,
+                "line_fit_error_threshold": self.ed_line_fit_error,
+                "max_error_threshold": self.ed_max_error,
+                "max_distance_between_lines_px": self.ed_max_distance,
+                "nfa_validation": self.ed_nfa, "pf_mode": self.ed_pf,
+                "edge_operator": self.ed_operator, "scan_interval": self.ed_scan,
+            },
+        }
+        for key, control in controls.get(algorithm, {}).items():
+            if key not in detector:
+                continue
+            value = detector[key]
+            if isinstance(control, QCheckBox):
+                control.setChecked(bool(value))
+            elif isinstance(control, QComboBox):
+                index = control.findText(str(value))
+                if index >= 0:
+                    control.setCurrentIndex(index)
+            else:
+                control.setValue(value)
+        post = state.get("postprocessing_parameters", {})
+        post_controls = {
+            "max_angle_difference_deg": self.post_angle,
+            "max_endpoint_distance_px": self.post_endpoint,
+            "max_collinearity_distance_px": self.post_collinearity,
+            "max_gap_px": self.post_gap,
+            "minimum_length_px": self.post_min_length,
+            "maximum_length_px": self.post_max_length,
+            "minimum_confidence": self.post_confidence,
+            "minimum_orientation_deg": self.post_orientation_min,
+            "maximum_orientation_deg": self.post_orientation_max,
+        }
+        for key, control in post_controls.items():
+            value = post.get(key)
+            if value is not None:
+                control.setValue(value)
+        if "merge_enabled" in post:
+            self.merge_enabled.setChecked(bool(post["merge_enabled"]))
+        if "minimum_confidence" in post:
+            self.post_confidence_enabled.setChecked(post["minimum_confidence"] is not None)
 
     def _selected_parameters(self, algorithm_id):
         if algorithm_id == "lsd":
