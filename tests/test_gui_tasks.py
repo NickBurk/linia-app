@@ -296,7 +296,7 @@ def test_project_round_trip_and_gui_language_docks(app, tmp_path):
     window.min_length.setValue(77)
     window._apply_ui_parameters(restored["display"])
     assert window.min_length.value() != 77
-    assert window.property_tabs.count() == 4
+    assert window.property_tabs.count() == 8
     window.language_box.setCurrentIndex(1)
     assert window.property_tabs.tabText(0) == "Data"
     assert window.file_menu.title() == "File"
@@ -328,3 +328,42 @@ def test_opt_in_restore_reloads_dem_and_missing_path_is_safe(app, tmp_path):
     assert missing.dem is None
     assert "moved-away.tif" in missing.statusBar().currentMessage()
     missing.close()
+
+
+def test_advanced_validation_and_full_grid_project(app, tmp_path, monkeypatch):
+    from lineament_analyzer.validation.datasets import generate_synthetic
+
+    dataset = generate_synthetic(tmp_path / "data", size=128)
+    window = MainWindow()
+    errors = []
+    monkeypatch.setattr(window, "show_error", errors.append)
+    window.validation.accept_dataset(dataset)
+    wait_for(app, lambda: window.task is None)
+    window.resolution_mode.setCurrentIndex(window.resolution_mode.findData("full"))
+    window.algorithm_box.setCurrentIndex(window.algorithm_box.findData("directional"))
+    assert window._selected_parameters("directional").levels == 3
+    window.advanced_controls["directional"]["levels"].setValue(2)
+    window.show_response()
+    wait_for(app, lambda: window.task is None)
+    window.run_detection()
+    wait_for(app, lambda: window.task is None)
+    assert window.results_by_algorithm["directional"].segments
+    assert window.results_by_algorithm["directional"].analysis_metadata["resolution_mode"] == "full"
+    window.validation.post.setChecked(True)
+    window.validation.start()
+    wait_for(app, lambda: window.task is None, timeout=10)
+    assert not errors
+    assert window.validation.report["dataset"]["synthetic"]
+    assert all("f1" in row["metrics"] for row in window.validation.report["results"])
+    assert "consensus" in window.results_by_algorithm
+    window.project_path = str(tmp_path / "advanced.laproj")
+    window.save_project()
+    window.close()
+    reopened = MainWindow()
+    monkeypatch.setattr(reopened, "show_error", errors.append)
+    reopened.open_project_path(window.project_path)
+    wait_for(app, lambda: reopened.task is None)
+    assert reopened.results_by_algorithm["directional"].segments
+    assert reopened.advanced_controls["directional"]["levels"].value() == 2
+    assert not errors
+    reopened.close()

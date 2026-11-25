@@ -7,7 +7,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
-from PySide6.QtCore import QSettings, Qt
+import rasterio
+from affine import Affine
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -28,6 +31,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QTabWidget,
@@ -35,12 +39,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from lineament_analyzer.algorithms.canny_hough import (
-    CannyHoughDetector,
-    CannyHoughParameters,
-)
-from lineament_analyzer.algorithms.edlines import EdLinesDetector, EdLinesParameters
-from lineament_analyzer.algorithms.lsd import LsdDetector, LsdParameters
+from lineament_analyzer.algorithms.canny_hough import CannyHoughParameters
+from lineament_analyzer.algorithms.edlines import EdLinesParameters
+from lineament_analyzer.algorithms.lsd import LsdParameters
 from lineament_analyzer.algorithms.postprocessing import (
     PostprocessParameters,
     postprocess_result,
@@ -49,8 +50,18 @@ from lineament_analyzer.algorithms.postprocessing import (
 from lineament_analyzer.algorithms.results import DetectionResult, parameters_dict
 from lineament_analyzer.core.windowed import check_cancel, process_dem
 from lineament_analyzer.data.dem import Dem, load_preview
+from lineament_analyzer.engine import (
+    CONTROLS,
+    METHODS,
+    PROFILES,
+    dataset_grid,
+    detector_response,
+    run_detector,
+)
 from lineament_analyzer.export.geojson import export_geojson
+from lineament_analyzer.export.geopackage import export_geopackage
 from lineament_analyzer.export.shapefile import export_shapefile
+from lineament_analyzer.gui.experiments import ExperimentPanel
 from lineament_analyzer.gui.project import load_project, save_project
 from lineament_analyzer.gui.tasks import Task
 
@@ -106,7 +117,7 @@ TEXT = {
         "units": "Единицы высот",
         "apply": "Применить",
         "cancel": "Отмена",
-        "saved": "GeoJSON сохранён",
+        "saved": "Экспорт завершён",
         "cancelled": "Отменено",
         "missing_dem": "Файл DEM не найден: {}", "no_dem": "DEM не загружена",
         "menu_file": "Файл", "menu_view": "Вид", "menu_analysis": "Анализ",
@@ -177,7 +188,7 @@ TEXT = {
         "units": "Elevation units",
         "apply": "Apply",
         "cancel": "Cancel",
-        "saved": "GeoJSON saved",
+        "saved": "Export complete",
         "cancelled": "Cancelled",
         "missing_dem": "DEM file not found: {}", "no_dem": "No DEM loaded",
         "menu_file": "File", "menu_view": "View", "menu_analysis": "Analysis",
@@ -199,7 +210,12 @@ TEXT = {
     },
 }
 
-ALGORITHM_NAMES = {"lsd": "LSD", "canny-hough": "Canny + Hough", "edlines": "EDLines"}
+ALGORITHM_NAMES = {key: method.name for key, method in METHODS.items()}
+ALGORITHM_NAMES["consensus"] = "Algorithm Consensus"
+FILTER_METHODS = {"directional", "wavelet", "log-gabor", "shearlet"}
+TERRAIN_MODES = ("elevation", "hillshade", "slope", "aspect", "tpi")
+
+
 ALGORITHM_COLORS = {
     "lsd": Qt.GlobalColor.red,
     "canny-hough": Qt.GlobalColor.darkGreen,
@@ -210,6 +226,17 @@ ALGORITHM_COLORS = {
 class MapCanvas(QGraphicsView):
     """Aspect-preserving raster canvas with wheel zoom and hand panning."""
 
+    pixelPicked = Signal(object)
+    picking = False
+
+    def mousePressEvent(self, event):
+        if self.picking and event.button() == Qt.MouseButton.LeftButton:
+            point = self.mapToScene(event.position().toPoint())
+            self.pixelPicked.emit((point.x() - 0.5, point.y() - 0.5))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
     def wheelEvent(self, event):
         factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
         self.scale(factor, factor)
@@ -217,13 +244,16 @@ class MapCanvas(QGraphicsView):
 
 
 class MainWindow(QMainWindow):
-    """DEM viewer with three asynchronous line detectors and result overlays."""
+    """DEM viewer with asynchronous detection, validation and result overlays."""
 
     def __init__(self) -> None:
         super().__init__()
         self.task = None
         self.closing = False
         self.source = None
+        self.native_grid = None
+        self.analysis_path = None
+        self.endpoints = []
         self.cache = TemporaryDirectory(prefix="lineament-")
         self.parameters = {}
         self.dem: Dem | None = None
@@ -240,6 +270,7 @@ class MainWindow(QMainWindow):
         self.scene = QGraphicsScene(self)
         self.view = MapCanvas(self.scene)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.view.pixelPicked.connect(self.accept_astar_point)
 
         self.open_button = QPushButton()
         self.open_button.clicked.connect(self.open_file)
@@ -257,7 +288,7 @@ class MainWindow(QMainWindow):
         self.export_button = QPushButton()
         self.export_button.clicked.connect(self.save_geojson)
         self.export_format = QComboBox()
-        self.export_format.addItems(["GeoJSON", "Shapefile"])
+        self.export_format.addItems(["GeoJSON", "Shapefile", "GeoPackage"])
         self.postprocess_button = QPushButton()
         self.postprocess_button.clicked.connect(self.run_postprocessing)
         self.language_label = QLabel()
@@ -265,28 +296,47 @@ class MainWindow(QMainWindow):
         self.language_box.addItems(["Русский", "English"])
         self.language_box.currentIndexChanged.connect(self.change_language)
 
-        controls = QHBoxLayout()
-        for widget in (
-            self.open_button,
-            self.layer_label,
-            self.layer,
-            self.algorithm_label,
-            self.algorithm_box,
-            self.detect_button,
-            self.result_label,
-            self.result_view_box,
-            self.export_format,
-            self.export_button,
-            self.postprocess_button,
-            self.language_label,
-            self.language_box,
-        ):
-            controls.addWidget(widget)
-
         self.parameter_stack = QStackedWidget()
         self._build_lsd_parameters()
         self._build_canny_parameters()
         self._build_edlines_parameters()
+        self.advanced_controls = {}
+        self.advanced_labels = {}
+        for algorithm, method in list(METHODS.items())[3:]:
+            form = QWidget()
+            layout = QFormLayout(form)
+            controls = self.advanced_controls[algorithm] = {}
+            for key, default in vars(method.parameters()).items():
+                _, _, minimum, maximum = CONTROLS[key]
+                if algorithm == "ransac" and key == "max_gap_px":
+                    minimum, maximum = 1, 32
+                field_type = method.parameters.__dataclass_fields__[key].type
+                decimals = 0 if field_type is int else 3
+                control = self._spin(minimum, maximum, default, decimals=decimals)
+                label = QLabel()
+                self.advanced_labels[algorithm, key] = label
+                controls[key] = control
+                layout.addRow(label, control)
+            self.parameter_stack.addWidget(form)
+
+        self.resolution_mode = QComboBox()
+        self.resolution_mode.addItem("", "preview")
+        self.resolution_mode.addItem("", "full")
+        self.resolution_label = QLabel()
+        self.memory_budget = self._spin(16, 32768, 512)
+        self.memory_budget.setSuffix(" MiB")
+        self.memory_label = QLabel()
+        self.profile_box = QComboBox()
+        self.profile_label = QLabel()
+        self.apply_profile_button = QPushButton()
+        self.apply_profile_button.clicked.connect(self.apply_profile)
+        self.save_profile_button = QPushButton()
+        self.save_profile_button.clicked.connect(self.save_profile)
+        self.response_button = QPushButton()
+        self.response_button.clicked.connect(self.show_response)
+        self.orientation_response = QCheckBox()
+        self.astar_manual = QPushButton()
+        self.astar_manual.clicked.connect(self.pick_astar_endpoints)
 
         self.postprocess_group = QGroupBox()
         post_form = QFormLayout(self.postprocess_group)
@@ -341,7 +391,6 @@ class MainWindow(QMainWindow):
         self.cancel_button = QPushButton()
         self.cancel_button.clicked.connect(self.cancel_task)
         self.cancel_button.setEnabled(False)
-        self.progress = QProgressBar()
 
         processing = QHBoxLayout()
         for widget in (
@@ -350,12 +399,10 @@ class MainWindow(QMainWindow):
             self.z_label,
             self.z_factor,
             self.apply_button,
-            self.progress,
-            self.cancel_button,
         ):
             processing.addWidget(widget)
 
-        self._build_workspace(controls, processing)
+        self._build_workspace(processing)
         self.resize(1250, 820)
         language_index = 1 if self.settings.value("language", "ru") == "en" else 0
         self.language_box.blockSignals(True)
@@ -385,7 +432,7 @@ class MainWindow(QMainWindow):
             else:
                 self.statusBar().showMessage(TEXT[self.language]["missing_dem"].format(last_dem))
 
-    def _build_workspace(self, controls, processing):
+    def _build_workspace(self, processing):
         """Arrange the existing controls around a large, aspect-safe map canvas."""
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -405,25 +452,48 @@ class MainWindow(QMainWindow):
         data_page = QWidget()
         data_layout = QVBoxLayout(data_page)
         data_layout.addWidget(self.open_button)
-        data_layout.addLayout(processing)
+        data_layout.addWidget(self.language_label)
+        data_layout.addWidget(self.language_box)
         self.data_info = QLabel("DEM не загружена")
         self.data_info.setWordWrap(True)
         data_layout.addWidget(self.data_info)
         data_layout.addStretch(1)
         tabs.addTab(data_page, "Данные")
 
+        terrain_page = QWidget()
+        terrain_layout = QVBoxLayout(terrain_page)
+        terrain_form = QFormLayout()
+        terrain_form.addRow(self.layer_label, self.layer)
+        terrain_layout.addLayout(terrain_form)
+        terrain_layout.addLayout(processing)
+        terrain_layout.addStretch(1)
+        self.terrain_tab = tabs.addTab(terrain_page, "")
+
         detection_page = QWidget()
         detect_layout = QVBoxLayout(detection_page)
         detect_form = QFormLayout()
-        detect_form.addRow(self.layer_label, self.layer)
         detect_form.addRow(self.algorithm_label, self.algorithm_box)
+        detect_form.addRow(self.resolution_label, self.resolution_mode)
+        detect_form.addRow(self.memory_label, self.memory_budget)
+        detect_form.addRow(self.profile_label, self.profile_box)
+        profile_buttons = QHBoxLayout()
+        profile_buttons.addWidget(self.apply_profile_button)
+        profile_buttons.addWidget(self.save_profile_button)
+        detect_form.addRow(profile_buttons)
         detect_form.addRow(self.parameter_stack)
         detect_form.addRow(self.result_label, self.result_view_box)
         detect_layout.addLayout(detect_form)
         detect_layout.addWidget(self.detect_button)
-        detect_layout.addWidget(self.cancel_button)
+        detect_layout.addWidget(self.astar_manual)
+        detect_layout.addWidget(self.orientation_response)
+        detect_layout.addWidget(self.response_button)
         detect_layout.addStretch(1)
-        tabs.addTab(detection_page, "Обнаружение")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(detection_page)
+        self.detection_tab = tabs.addTab(scroll, "Обнаружение")
+        self.comparison = ExperimentPanel(self, False)
+        self.comparison_tab = tabs.addTab(self.comparison, "")
 
         post_page = QWidget()
         post_layout = QVBoxLayout(post_page)
@@ -432,13 +502,25 @@ class MainWindow(QMainWindow):
         post_layout.addWidget(self.class_label)
         post_layout.addWidget(self.class_group_list)
         post_layout.addStretch(1)
-        tabs.addTab(post_page, "Постобработка")
+        self.post_tab = tabs.addTab(post_page, "Постобработка")
+        self.validation = ExperimentPanel(self, True)
+        validation_scroll = QScrollArea()
+        validation_scroll.setWidgetResizable(True)
+        validation_scroll.setWidget(self.validation)
+        self.validation_tab = tabs.addTab(validation_scroll, "")
 
         stats_page = QWidget()
         stats_layout = QVBoxLayout(stats_page)
         stats_layout.addWidget(self.statistics_label)
         stats_layout.addStretch(1)
-        tabs.addTab(stats_page, "Статистика")
+        self.stats_tab = tabs.addTab(stats_page, "Статистика")
+        export_page = QWidget()
+        export_layout = QVBoxLayout(export_page)
+        export_layout.addWidget(self.export_format)
+        export_layout.addWidget(self.export_button)
+        export_layout.addStretch(1)
+        self.export_tab = tabs.addTab(export_page, "")
+        tabs.setUsesScrollButtons(True)
         props_dock = QDockWidget(self)
         props_dock.setObjectName("propertiesDock")
         props_dock.setWidget(tabs)
@@ -460,6 +542,7 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(160)
         self.statusBar().addPermanentWidget(self.progress)
+        self.statusBar().addPermanentWidget(self.cancel_button)
 
     def _build_menus(self):
         self.file_menu = self.menuBar().addMenu("")
@@ -495,13 +578,13 @@ class MainWindow(QMainWindow):
 
         self.analysis_menu = self.menuBar().addMenu("")
         self.terrain_action = self.analysis_menu.addAction("")
-        self.terrain_action.triggered.connect(lambda: self.property_tabs.setCurrentIndex(0))
+        self.terrain_action.triggered.connect(lambda: self.property_tabs.setCurrentIndex(self.terrain_tab))
         self.detect_action = self.analysis_menu.addAction("")
         self.detect_action.triggered.connect(self.run_detection)
         self.postprocess_action = self.analysis_menu.addAction("")
         self.postprocess_action.triggered.connect(self.run_postprocessing)
         self.compare_action = self.analysis_menu.addAction("")
-        self.compare_action.triggered.connect(lambda: self.result_view_box.setCurrentIndex(0))
+        self.compare_action.triggered.connect(lambda: self.property_tabs.setCurrentIndex(self.comparison_tab))
 
         export_menu = self.menuBar().addMenu("")
         self.export_action = export_menu.addAction("")
@@ -567,6 +650,8 @@ class MainWindow(QMainWindow):
         if self.task is not None:
             return
         self.source = self.dem = self.image = None
+        self.native_grid = self.analysis_path = None
+        self.clear_experiments()
         self.parameters.clear()
         self.results_by_algorithm.clear()
         self.postprocessed_results_by_algorithm.clear()
@@ -698,7 +783,7 @@ class MainWindow(QMainWindow):
             label.setText(labels[key])
         self.post_confidence_enabled.setText("Применять" if index == 0 else "Apply")
         self.language_label.setText(labels["language"])
-        self.length_label.setText(labels["length"])
+        self.length_label.setText(("Минимальная длина (px)", "Minimum length (px)")[index])
         self.unit_label.setText(labels["units"])
         self.apply_button.setText(labels["apply"])
         self.cancel_button.setText(labels["cancel"])
@@ -722,13 +807,40 @@ class MainWindow(QMainWindow):
             (self.exit_action, "exit"),
         ):
             action.setText(labels[key])
-        for tab_index, key in enumerate(("tab_data", "tab_detection", "tab_post", "tab_stats")):
+        for tab_index, key in (
+            (0, "tab_data"), (self.terrain_tab, "terrain"),
+            (self.detection_tab, "tab_detection"), (self.comparison_tab, "compare"),
+            (self.post_tab, "tab_post"), (self.stats_tab, "tab_stats"),
+            (self.export_tab, "menu_export"),
+        ):
             self.property_tabs.setTabText(tab_index, labels[key])
+        self.property_tabs.setTabText(self.validation_tab, ("Валидация", "Validation")[index])
+        self.export_button.setText(("Экспорт линий", "Export lines")[index])
+        self.export_action.setText(self.export_button.text())
+        self.resolution_label.setText(("Режим разрешения", "Resolution mode")[index])
+        self.resolution_mode.setItemText(0, ("Предпросмотр", "Preview")[index])
+        self.resolution_mode.setItemText(1, ("Полное разрешение", "Full resolution")[index])
+        self.memory_label.setText(("Бюджет памяти", "Memory budget")[index])
+        self.profile_label.setText(("Профиль", "Profile")[index])
+        self.apply_profile_button.setText(("Применить", "Apply")[index])
+        self.save_profile_button.setText(("Сохранить", "Save")[index])
+        self.astar_manual.setText(("Выбрать две точки A*", "Pick two A* endpoints")[index])
+        self.response_button.setText(("Показать отклик", "Show response")[index])
+        self.orientation_response.setText(("Цвет по направлению", "Color by direction")[index])
+        for (algorithm, key), label in self.advanced_labels.items():
+            text = CONTROLS[key][index]
+            label.setText(text)
+            control = self.advanced_controls[algorithm][key]
+            control.setToolTip(f"{text} · {control.minimum():g}–{control.maximum():g}")
+        self.refresh_profiles()
+        self.validation.localize()
+        self.comparison.localize()
 
         selected_algorithm = self.algorithm_box.currentData() or "lsd"
         self.algorithm_box.blockSignals(True)
         self.algorithm_box.clear()
-        for algorithm_id, name in zip(ALGORITHM_NAMES, labels["algorithms"], strict=True):
+        for algorithm_id, method in METHODS.items():
+            name = "Shearlet (экспериментальный)" if index == 0 and algorithm_id == "shearlet" else method.name
             self.algorithm_box.addItem(name, algorithm_id)
         self.algorithm_box.setCurrentIndex(max(0, self.algorithm_box.findData(selected_algorithm)))
         self.algorithm_box.blockSignals(False)
@@ -757,6 +869,12 @@ class MainWindow(QMainWindow):
 
     def algorithm_changed(self, index):
         self.parameter_stack.setCurrentIndex(max(0, index))
+        method = self.algorithm_box.currentData()
+        self.astar_manual.setVisible(method == "astar")
+        self.response_button.setVisible(method in FILTER_METHODS)
+        self.orientation_response.setVisible(method in FILTER_METHODS)
+        self.view.picking = False
+        self.endpoints.clear()
 
     def refresh_result_choices(self):
         previous = self.result_view_box.currentData() if self.result_view_box.count() else "all"
@@ -793,6 +911,9 @@ class MainWindow(QMainWindow):
             self.postprocess_button,
             self.postprocess_group,
             self.class_group_list,
+            self.validation, self.comparison, self.resolution_mode, self.memory_budget,
+            self.astar_manual, self.response_button, self.orientation_response, self.profile_box,
+            self.apply_profile_button, self.save_profile_button,
         ):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
@@ -886,20 +1007,24 @@ class MainWindow(QMainWindow):
 
     def prepare_layer(self, path, kind, parameters, cancel, progress):
         preview = load_preview(path)
+        with rasterio.open(path) as dataset:
+            native_grid = dataset_grid(dataset)
         check_cancel(cancel)
         if kind == "elevation":
             image = preview.values
+            analysis_path = path
         else:
             target = Path(self.cache.name) / "derivative.tif"
             process_dem(path, target, kind, progress=progress, cancel=cancel, **parameters)
             image = load_preview(target).values
+            analysis_path = target
         valid = preview.valid & np.isfinite(image)
         gray = np.zeros(image.shape, dtype=np.uint8)
         if np.any(valid):
             low, high = np.percentile(image[valid], [2, 98])
             gray[valid] = np.clip((image[valid] - low) / max(high - low, 1e-12) * 255, 0, 255)
         check_cancel(cancel)
-        return str(Path(path).resolve()), kind, parameters, preview, image, gray
+        return str(Path(path).resolve()), kind, parameters, preview, image, gray, native_grid, analysis_path
 
     def render(self):
         if self.source is None:
@@ -917,8 +1042,9 @@ class MainWindow(QMainWindow):
     def accept_layer(self, result):
         if self.closing:
             return
-        path, kind, parameters, preview, image, gray = result
+        path, kind, parameters, preview, image, gray, self.native_grid, self.analysis_path = result
         if path != self.source:
+            self.clear_experiments()
             self.results_by_algorithm.clear()
             self.postprocessed_results_by_algorithm.clear()
             self.statistics_label.clear()
@@ -950,11 +1076,13 @@ class MainWindow(QMainWindow):
             state = self.pending_project
             self.pending_project = None
             results = list(state["detection_results"].values()) + list(state["postprocessed_results"].values())
+            preview_grid = (
+                self.dem.values.shape, tuple(self.dem.transform)[:6],
+                self.dem.crs.to_wkt() if self.dem.crs else None,
+            )
             matches = all(
-                value.source_shape == self.dem.values.shape
-                and value.source_transform == tuple(float(v) for v in tuple(self.dem.transform)[:6])
-                and value.source_crs_wkt == (self.dem.crs.to_wkt() if self.dem.crs else None)
-                for value in results
+                (value.source_shape, value.source_transform, value.source_crs_wkt)
+                in (preview_grid, self.native_grid) for value in results
             )
             if matches:
                 self.results_by_algorithm = state["detection_results"]
@@ -965,6 +1093,10 @@ class MainWindow(QMainWindow):
                 self.algorithm_box.setCurrentIndex(max(0, self.algorithm_box.findData(display.get("algorithm"))))
                 self._apply_ui_parameters(display)
                 self._refresh_layers()
+                self.refresh_result_choices()
+                result_index = self.result_view_box.findData(display.get("result"))
+                if result_index >= 0:
+                    self.result_view_box.setCurrentIndex(result_index)
             else:
                 self.show_error("Результаты проекта относятся к другой геометрии DEM")
         self.refresh_result_choices()
@@ -1001,8 +1133,10 @@ class MainWindow(QMainWindow):
 
     def open_project(self):
         path, _ = QFileDialog.getOpenFileName(self, TEXT[self.language]["open_project_title"], "", "Project (*.laproj *.json)")
-        if not path:
-            return
+        if path:
+            self.open_project_path(path)
+
+    def open_project_path(self, path):
         try:
             state = load_project(path)
             state["project_path"] = path
@@ -1019,12 +1153,30 @@ class MainWindow(QMainWindow):
         algorithm = self.algorithm_box.currentData() or "lsd"
         return {
             "detector_parameters": parameters_dict(self._selected_parameters(algorithm)),
+            "all_detector_parameters": {
+                key: parameters_dict(self._selected_parameters(key)) for key in METHODS
+            },
+            "resolution_mode": self.resolution_mode.currentData(),
+            "memory_mib": self.memory_budget.value(),
             "postprocessing_parameters": parameters_dict(self._postprocess_parameters()),
         }
 
     def _apply_ui_parameters(self, state):
-        detector = state.get("detector_parameters", {})
         algorithm = self.algorithm_box.currentData()
+        all_parameters = state.get("all_detector_parameters", {
+            algorithm: state.get("detector_parameters", {}),
+        })
+        for key, parameters in all_parameters.items():
+            self.apply_detector_parameters(key, parameters)
+        resolution = self.resolution_mode.findData(state.get("resolution_mode"))
+        if resolution >= 0:
+            self.resolution_mode.setCurrentIndex(resolution)
+        if "memory_mib" in state:
+            self.memory_budget.setValue(state["memory_mib"])
+        post = state.get("postprocessing_parameters", {})
+        self.apply_postprocess_parameters(post)
+
+    def apply_detector_parameters(self, algorithm, detector):
         controls = {
             "lsd": {"min_length": self.min_length},
             "canny-hough": {
@@ -1047,7 +1199,7 @@ class MainWindow(QMainWindow):
                 "edge_operator": self.ed_operator, "scan_interval": self.ed_scan,
             },
         }
-        for key, control in controls.get(algorithm, {}).items():
+        for key, control in (controls | self.advanced_controls).get(algorithm, {}).items():
             if key not in detector:
                 continue
             value = detector[key]
@@ -1059,7 +1211,7 @@ class MainWindow(QMainWindow):
                     control.setCurrentIndex(index)
             else:
                 control.setValue(value)
-        post = state.get("postprocessing_parameters", {})
+    def apply_postprocess_parameters(self, post):
         post_controls = {
             "max_angle_difference_deg": self.post_angle,
             "max_endpoint_distance_px": self.post_endpoint,
@@ -1081,6 +1233,10 @@ class MainWindow(QMainWindow):
             self.post_confidence_enabled.setChecked(post["minimum_confidence"] is not None)
 
     def _selected_parameters(self, algorithm_id):
+        if algorithm_id in self.advanced_controls:
+            return METHODS[algorithm_id].parameters(**{
+                key: control.value() for key, control in self.advanced_controls[algorithm_id].items()
+            })
         if algorithm_id == "lsd":
             return LsdParameters(self.min_length.value())
         if algorithm_id == "canny-hough":
@@ -1108,24 +1264,125 @@ class MainWindow(QMainWindow):
             scan_interval=self.ed_scan.value(),
         )
 
-    def run_detection(self):
+    def clear_experiments(self):
+        self.view.picking = False
+        self.endpoints.clear()
+        self.comparison.clear_results()
+        self.validation.clear_results()
+
+    def analysis_options(self):
+        return {
+            "resolution": self.resolution_mode.currentData(),
+            "memory_mib": self.memory_budget.value(),
+            "working_path": self.analysis_path,
+            "preview": replace(
+                self.dem, values=self.image, valid=self.dem.valid & np.isfinite(self.image),
+            ),
+        }
+
+    def refresh_profiles(self):
+        index = int(self.language == "en")
+        selected = self.profile_box.currentData()
+        self.profile_box.clear()
+        for key, profile in PROFILES.items():
+            self.profile_box.addItem(profile[index], ("preset", key))
+        for key in self.user_profiles():
+            self.profile_box.addItem(key, ("user", key))
+        previously = self.profile_box.findData(selected)
+        if previously >= 0:
+            self.profile_box.setCurrentIndex(previously)
+
+    def user_profiles(self):
+        try:
+            return json.loads(self.settings.value("profiles", "{}"))
+        except (TypeError, ValueError):
+            return {}
+
+    def apply_profile(self):
+        origin, key = self.profile_box.currentData()
+        configurations = PROFILES[key][2] if origin == "preset" else self.user_profiles()[key]
+        for algorithm, parameters in configurations.items():
+            self.apply_detector_parameters(algorithm, parameters_dict(METHODS[algorithm].parameters(**parameters)))
+        self.algorithm_box.setCurrentIndex(self.algorithm_box.findData(next(iter(configurations))))
+        for panel in (self.comparison, self.validation):
+            for index in range(panel.methods.count()):
+                item = panel.methods.item(index)
+                matches = item.data(Qt.ItemDataRole.UserRole) in configurations
+                item.setCheckState(Qt.CheckState.Checked if matches else Qt.CheckState.Unchecked)
+
+    def save_profile(self):
+        title = ("Название профиля", "Profile name")[self.language == "en"]
+        name, accepted = QInputDialog.getText(self, title, title)
+        if accepted and name.strip():
+            profiles = self.user_profiles()
+            profiles[name.strip()] = self._ui_parameters()["all_detector_parameters"]
+            self.settings.setValue("profiles", json.dumps(profiles, ensure_ascii=False))
+            self.refresh_profiles()
+
+    def pick_astar_endpoints(self):
+        if self.dem is not None and self.task is None:
+            self.endpoints.clear()
+            self.view.picking = True
+            self.statusBar().showMessage(("Выберите начало и конец на карте", "Pick start and end on the map")[self.language == "en"])
+
+    def accept_astar_point(self, point):
+        if self.dem is None or not (0 <= point[0] < self.dem.values.shape[1]
+                                   and 0 <= point[1] < self.dem.values.shape[0]):
+            return
+        if self.resolution_mode.currentData() == "full":
+            affine = Affine(*self.native_grid[1])
+            x, y = self.dem.transform * tuple(np.asarray(point) + .5)
+            point = tuple(np.asarray(~affine * (x, y)) - .5)
+        self.endpoints.append(point)
+        if len(self.endpoints) == 2:
+            self.view.picking = False
+            self.run_detection(endpoints=tuple(self.endpoints))
+            self.endpoints.clear()
+
+    def show_response(self):
+        if self.dem is None:
+            return
+        algorithm = self.algorithm_box.currentData()
+        p = self._selected_parameters(algorithm)
+        dem = self.analysis_options()["preview"]
+        orientation = self.orientation_response.isChecked()
+        self.start_task(
+            lambda progress, cancel: (
+                detector_response(dem, algorithm, p, progress=progress, cancel=cancel)[1],
+                orientation,
+            ),
+            self.accept_response,
+        )
+
+    def accept_response(self, payload):
+        response, orientation = payload
+        if orientation:
+            angle = response.tangent_rad
+            image = np.stack([(0.5 + .5 * np.cos(2 * angle + phase)) * response.strength
+                              for phase in (0, 2 * np.pi / 3, 4 * np.pi / 3)], axis=-1)
+            raster = np.ascontiguousarray(np.clip(image * 255, 0, 255).astype(np.uint8))
+            height, width = raster.shape[:2]
+            qimage = QImage(raster.data, width, height, 3 * width, QImage.Format.Format_RGB888)
+        else:
+            raster = np.ascontiguousarray((response.strength * 255).astype(np.uint8))
+            height, width = raster.shape
+            qimage = QImage(raster.data, width, height, width, QImage.Format.Format_Grayscale8)
+        self.scene.clear()
+        self.scene.addPixmap(QPixmap.fromImage(qimage.copy()))
+        self.draw_result_overlays()
+        self.statusBar().showMessage(self.response_button.text())
+
+    def run_detection(self, _checked=False, *, endpoints=None):
         if self.dem is None or self.image is None:
             return
         algorithm_id = self.algorithm_box.currentData()
         parameters = self._selected_parameters(algorithm_id)
-        detector = {
-            "lsd": LsdDetector(),
-            "canny-hough": CannyHoughDetector(),
-            "edlines": EdLinesDetector(),
-        }[algorithm_id]
-        analysis_dem = replace(
-            self.dem,
-            values=self.image,
-            valid=self.dem.valid & np.isfinite(self.image),
-        )
+        source = self.source
+        options = self.analysis_options()
         self.start_task(
-            lambda progress, cancel: detector.run(
-                analysis_dem, parameters, progress=progress, cancel=cancel
+            lambda progress, cancel: run_detector(
+                source, algorithm_id, parameters, endpoints=endpoints, progress=progress,
+                cancel=cancel, **options,
             ),
             self.accept_detection,
         )
@@ -1138,6 +1395,9 @@ class MainWindow(QMainWindow):
     def accept_detection(self, result: DetectionResult):
         if self.closing:
             return
+        self.results_by_algorithm.pop("consensus", None)
+        for key in (result.algorithm_id, "consensus"):
+            self.postprocessed_results_by_algorithm.pop(key, None)
         self.results_by_algorithm[result.algorithm_id] = result
         self._refresh_layers()
         self.segments = result.as_pixel_array()
@@ -1176,13 +1436,17 @@ class MainWindow(QMainWindow):
                     color = QColor.fromHsv(hue, 220, 230)
                 else:
                     class_id = algorithm_id
-                    color = QColor(ALGORITHM_COLORS[algorithm_id])
+                    color = QColor(ALGORITHM_COLORS.get(algorithm_id, Qt.GlobalColor.magenta))
+                    if algorithm_id not in ALGORITHM_COLORS:
+                        hue = int.from_bytes(hashlib.sha256(algorithm_id.encode()).digest()[:2], "big") % 360
+                        color = QColor.fromHsv(hue, 215, 235)
                 path = paths.setdefault(class_id, QPainterPath())
                 colors[class_id] = color
-                x1, y1 = segment.pixel_start
-                x2, y2 = segment.pixel_end
-                path.moveTo(x1 + 0.5, y1 + 0.5)
-                path.lineTo(x2 + 0.5, y2 + 0.5)
+                world_to_preview = ~self.dem.transform if self.dem else ~Affine(*result.source_transform)
+                points = [world_to_preview * coordinate for coordinate in segment.coordinates]
+                path.moveTo(*points[0])
+                for point in points[1:]:
+                    path.lineTo(*point)
             for group_id, path in paths.items():
                 pen = QPen(colors[group_id])
                 pen.setCosmetic(True)
@@ -1210,11 +1474,12 @@ class MainWindow(QMainWindow):
 
     def run_postprocessing(self):
         algorithm_id = self.algorithm_box.currentData()
+        selected = self.result_view_box.currentData()
+        if selected == "consensus":
+            algorithm_id = selected
         source = self.results_by_algorithm.get(algorithm_id)
-        if source is None:
-            selected = self.result_view_box.currentData()
-            if isinstance(selected, str) and selected.startswith("post:"):
-                source = self.postprocessed_results_by_algorithm.get(selected[5:])
+        if source is None and isinstance(selected, str) and selected.startswith("post:"):
+            source = self.postprocessed_results_by_algorithm.get(selected[5:])
         if source is None:
             return
         parameters = self._postprocess_parameters()
@@ -1283,9 +1548,12 @@ class MainWindow(QMainWindow):
     def save_geojson(self):
         if self.dem is None or not (self.results_by_algorithm or self.postprocessed_results_by_algorithm):
             return
-        is_shapefile = self.export_format.currentText() == "Shapefile"
-        title = "Shapefile" if is_shapefile else "GeoJSON"
-        file_filter = "Shapefile (*.shp)" if is_shapefile else "GeoJSON (*.geojson)"
+        title = self.export_format.currentText()
+        file_filter, exporter = {
+            "GeoJSON": ("GeoJSON (*.geojson)", export_geojson),
+            "Shapefile": ("Shapefile (*.shp)", export_shapefile),
+            "GeoPackage": ("GeoPackage (*.gpkg)", export_geopackage),
+        }[title]
         path, _ = QFileDialog.getSaveFileName(self, title, "", file_filter)
         if path:
             selected = self.result_view_box.currentData()
@@ -1297,7 +1565,6 @@ class MainWindow(QMainWindow):
                 else [self.results_by_algorithm[selected]]
             )
             dem = self.dem
-            exporter = export_shapefile if is_shapefile else export_geojson
             self.start_task(
                 lambda progress, cancel: exporter(path, dem, results),
                 self.export_finished,
