@@ -72,5 +72,7 @@
 ## Current status
 
 - Phase 0 review: complete. The installed base `opencv-python-headless` wheel exposes LSD but not `ximgproc`; Phase 3 will therefore evaluate the contrib wheel before EDLines implementation.
-- Phase 1 shared contract: complete. Existing and new tests pass (59 total); Ruff passes. Commit: pending.
-- Phases 2–5: not started.
+- Phase 1 shared contract: complete. Existing and new tests pass (59 total); Ruff passes. Commit: `094ef32`.
+- Phase 2 Canny–Hough: complete. Synthetic coverage is included; full suite: 76 passed, Ruff passed. Commit: pending.
+- Phase 3 EDLines: backend confirmed available in `opencv-contrib-python-headless` 5.1.0.95 (`cv2.ximgproc.createEdgeDrawing`); implementation in progress.
+- Phases 4–5: not started.
