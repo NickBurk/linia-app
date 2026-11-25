@@ -49,3 +49,39 @@ The main window puts `MapCanvas` in the centre and uses dock widgets for layers 
 properties. The map keeps aspect ratio, zooms around the mouse wheel and supports drag
 panning. Layer and processing controls remain in Qt widgets, while heavy raster and
 algorithm operations retain the existing cancellable `Task` lifecycle.
+
+## Independent Python API
+
+The engine registry maps stable algorithm IDs to implementations, parameter
+dataclasses, resource estimates and consensus families. Existing detector imports
+and endpoint arrays remain available. LineSegment.pixels and LineSegment.coordinates
+provide full vertices in pixel-centre and source CRS coordinates. Projects retain
+these vertices and analysis metadata and continue reading endpoint-only documents.
+Qt maps source vertices to the viewport grid.
+
+    from lineament_analyzer.algorithms.postprocessing import PostprocessParameters, postprocess_result
+    from lineament_analyzer.data.dem import load_preview
+    from lineament_analyzer.engine import run_detector
+    from lineament_analyzer.export.geopackage import export_geopackage
+
+    path = "terrain.tif"
+    raw = run_detector(path, "directional", {"levels": 2}, resolution="full", memory_mib=1024)
+    post = postprocess_result(raw, PostprocessParameters())
+    export_geopackage("lineaments.gpkg", load_preview(path), [raw, post])
+
+Use load_dem for a native array or load_preview for a bounded grid. Pass method-to-
+parameter mappings to run_methods for sequential runs and measurements. The progress
+callback receives percentages and the cancellation callback returns true on request.
+A* accepts optional endpoints in (column, row) units of the processing grid.
+Use detector_response and detector_component for strengths, tangents and coefficients.
+
+The validation.experiment module accepts a recorded dataset, detector settings and
+matching parameters. It can add consensus and postprocessed results to one report.
+The validation.datasets.check_splits function checks cross-partition separation.
+Vector I/O and report generation are also independent of Qt.
+
+The engine estimates working memory against the operation budget and available RAM.
+Supported detectors tile when required. The mean vertex position assigns each
+candidate to a tile interior. Window normalization and candidate extent can differ
+near seams. Global FFT methods keep their whole-domain transforms. The derivative
+cache retains recent native GeoTIFFs within a GUI session.

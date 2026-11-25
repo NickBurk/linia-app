@@ -38,3 +38,14 @@ repeatable DEM loading, opt-in last-DEM restore, persistent Qt window/language s
 versioned JSON projects, a docked map workspace, and lifecycle/project regression tests.
 Windows frozen runtime verification and CI results are tracked in `docs/dem-loading-fix.md`
 and `docs/gui-redesign.md`; do not begin PHASE 05 until the branch validation is recorded.
+
+## PHASE 05 and PHASE 06
+
+The release branch feature/phase-05-06-final-engine starts from PHASE 04.1 commit
+87e4cf7. The code and workflow match runtime-tested b8d53d8.
+[PHASE 04.1 CI](https://github.com/NickBurk/linia-app/actions/runs/45717568468)
+
+- Add and test detectors, native/preview execution, parameter profiles and method agreement.
+- Implement reference import, synthetic DEMs, spatial evaluation and reports.
+- Integrate the Qt workspaces, GIS exports and frozen Windows acceptance flow.
+- Record performance and scientific limits in the phase reports.

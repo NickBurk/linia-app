@@ -47,3 +47,17 @@ See [architecture](docs/architecture.md) and [development plan](docs/plan.md). W
 видимость классов и параметры отображения. Путь к последнему DEM и состояние окна
 запоминаются через Qt Settings; автоматическое восстановление включается в меню «Файл».
 См. [исправление загрузки](docs/dem-loading-fix.md) и [обновление GUI](docs/gui-redesign.md).
+
+## Lineament Analyzer 1.0 RC
+
+PHASE 05 adds A*, Segment Tracing, RANSAC, Directional Filters, Wavelet, Log-Gabor
+and experimental Shearlet. Run individual detectors, compare methods, inspect unique
+candidates and form Algorithm Consensus. Choose Preview or Full Resolution.
+Vector export supports GeoJSON, Shapefile and GeoPackage.
+
+PHASE 06 adds synthetic truth, user reference layers and a **Валидация / Validation**
+workspace. Review matches, metrics and axial direction plots. Export experiment
+reports in HTML, JSON or CSV.
+[Русский справочник](docs/user-manual-ru.md) · [English guide](docs/user-manual-en.md)
+
+[Core API](docs/architecture.md#independent-python-api) · [Windows release](docs/release-notes.md) · [Validation methodology](docs/validation-methodology.md)
