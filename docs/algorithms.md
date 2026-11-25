@@ -89,3 +89,27 @@ the perpendicular residual tolerance and the hypothesis extent. The best hypothe
 refitted by total least squares, split at large projected gaps and checked against the
 source mask. RMSE is reported in pixels. Its support score is derived from fit residuals.
 The seed, iteration and candidate budgets make the search bounded and reproducible.
+
+## Directional, wavelet, Log-Gabor and experimental Shearlet
+
+Directional filtering projects a scale-normalized Gaussian Hessian onto the normal
+of each configured tangent. Scales double at every level. The wavelet implementation
+uses an undecimated separable B-spline filter with taps `[1, 4, 6, 4, 1]/16`, dyadic
+tap spacing and reflective boundaries. Horizontal, vertical and diagonal details plus
+the final approximation sum to the input. The spline is symmetric and supports
+shift-equivariant detail maps on the interior without decimation.
+
+Log-Gabor uses zero-DC radial windows `exp(−log(f/fc)^2/(2b^2))` and axial Gaussian
+angular weights. Central frequency halves at each level. The sampled experimental
+Shearlet frame uses two overlapping frequency cones, dyadic radial centres and
+triangular shear windows in slope, with angular spacing proportional to `2^(−j/2)`.
+Windows are normalized pointwise by their root sum of squares, so analysis and
+synthesis recover the input through a partition of unity. This is a sampled discrete
+cone frame with periodic Fourier boundary conditions. Its coefficients are not
+interchangeable with a reference discrete shearlet library's coefficients.
+
+The detectors select maximum absolute band response, suppress transverse non-maxima
+and link ridge pixels along the preferred tangent. Filter radius controls NoData
+erosion. Fourier filters reflect-pad the raster and have global support, so NoData
+fill and edge effects can extend beyond that exclusion margin. Iterating bands retains
+a constant number of raster-sized arrays. Frequency methods take an FFT per band.
