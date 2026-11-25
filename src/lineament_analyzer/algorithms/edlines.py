@@ -13,14 +13,12 @@ from lineament_analyzer.algorithms.results import (
     parameters_dict,
 )
 from lineament_analyzer.algorithms.spatial import pixel_size_metres
-from lineament_analyzer.algorithms.support import sample_valid_support
+from lineament_analyzer.algorithms.support import detector_support_mask, sample_mask_support
 from lineament_analyzer.core.windowed import check_cancel
 from lineament_analyzer.data.dem import Dem
 
 EDGE_OPERATORS = {
-    "PREWITT": cv2.ximgproc.EDGE_DRAWING_PREWITT
-    if hasattr(cv2, "ximgproc")
-    else 0,
+    "PREWITT": cv2.ximgproc.EDGE_DRAWING_PREWITT if hasattr(cv2, "ximgproc") else 0,
     "SOBEL": cv2.ximgproc.EDGE_DRAWING_SOBEL if hasattr(cv2, "ximgproc") else 1,
     "SCHARR": cv2.ximgproc.EDGE_DRAWING_SCHARR if hasattr(cv2, "ximgproc") else 2,
 }
@@ -93,9 +91,7 @@ def _new_backend(parameters: EdLinesParameters, minimum_length_px: int):
     """Create the actual Edge Drawing backend; never substitute another detector."""
     ximgproc = getattr(cv2, "ximgproc", None)
     if ximgproc is None or not hasattr(ximgproc, "createEdgeDrawing"):
-        raise RuntimeError(
-            "EDLines requires OpenCV contrib with cv2.ximgproc.createEdgeDrawing"
-        )
+        raise RuntimeError("EDLines requires OpenCV contrib with cv2.ximgproc.createEdgeDrawing")
     backend = ximgproc.createEdgeDrawing()
     config = backend.Params()
     config.Sigma = parameters.sigma
@@ -114,7 +110,7 @@ def _new_backend(parameters: EdLinesParameters, minimum_length_px: int):
     return backend
 
 
-def detect(
+def _detect_with_support(
     image: np.ndarray,
     valid: np.ndarray,
     parameters: EdLinesParameters,
@@ -122,8 +118,8 @@ def detect(
     pixel_size_m: float,
     cancel=None,
     progress=None,
-) -> np.ndarray:
-    """Return supported EDLines endpoints as a finite Nx4 pixel array."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return supported EDLines endpoints and their normalized edge support."""
     parameters.validate()
     if not np.isfinite(pixel_size_m) or pixel_size_m <= 0:
         raise ValueError("Pixel size in metres must be positive and finite")
@@ -132,7 +128,7 @@ def detect(
         progress(0)
     prepared = _prepare_image(image, valid)
     if prepared is None:
-        return np.empty((0, 4), dtype=float)
+        return np.empty((0, 4), dtype=float), np.empty(0, dtype=float)
     raster, mask = prepared
     minimum_length_px = max(1, round(parameters.min_segment_length_m / pixel_size_m))
     backend = _new_backend(parameters, minimum_length_px)
@@ -146,15 +142,46 @@ def detect(
     if progress is not None:
         progress(85)
     if lines is None:
-        return np.empty((0, 4), dtype=float)
+        return np.empty((0, 4), dtype=float), np.empty(0, dtype=float)
     candidates = np.asarray(lines, dtype=float).reshape(-1, 4)
+    edge_image = backend.getEdgeImage()
+    if edge_image is None or edge_image.shape != mask.shape:
+        edge_image = np.zeros(mask.shape, dtype=np.uint8)
     safe_radius = max(2, ceil(parameters.sigma * 3))
-    accepted = [
-        line
-        for line in candidates
-        if sample_valid_support(mask, line, radius=safe_radius) is not None
-    ]
-    return np.asarray(accepted, dtype=float).reshape(-1, 4)
+    safe_mask = detector_support_mask(mask, radius=safe_radius)
+    accepted, support_fractions = [], []
+    for line in candidates:
+        samples = sample_mask_support(safe_mask, line)
+        if samples is None:
+            continue
+        x, y = samples
+        accepted.append(line)
+        support_fractions.append(float(np.count_nonzero(edge_image[y, x]) / len(x)))
+    return (
+        np.asarray(accepted, dtype=float).reshape(-1, 4),
+        np.asarray(support_fractions, dtype=float),
+    )
+
+
+def detect(
+    image: np.ndarray,
+    valid: np.ndarray,
+    parameters: EdLinesParameters,
+    *,
+    pixel_size_m: float,
+    cancel=None,
+    progress=None,
+) -> np.ndarray:
+    """Return supported EDLines endpoints as a finite Nx4 pixel array."""
+    segments, _ = _detect_with_support(
+        image,
+        valid,
+        parameters,
+        pixel_size_m=pixel_size_m,
+        cancel=cancel,
+        progress=progress,
+    )
+    return segments
 
 
 class EdLinesDetector:
@@ -172,7 +199,7 @@ class EdLinesDetector:
     ) -> DetectionResult:
         parameters.validate()
         scale = pixel_size_metres(dem)
-        pixels = detect(
+        pixels, support_fractions = _detect_with_support(
             dem.values,
             dem.valid,
             parameters,
@@ -185,13 +212,14 @@ class EdLinesDetector:
             pixels,
             algorithm_id=self.algorithm_id,
             parameters={**parameters_dict(parameters), "metric_pixel_size_m": scale},
+            confidences=support_fractions,
+            properties=[{"edge_support_fraction": float(value)} for value in support_fractions],
         )
         check_cancel(cancel)
         segments = tuple(
             segment
             for segment in result.segments
-            if segment.length_m is not None
-            and segment.length_m >= parameters.min_segment_length_m
+            if segment.length_m is not None and segment.length_m >= parameters.min_segment_length_m
         )
         if progress is not None:
             progress(100)
@@ -199,5 +227,7 @@ class EdLinesDetector:
             algorithm_id=result.algorithm_id,
             parameters=result.parameters,
             source_crs_wkt=result.source_crs_wkt,
+            source_transform=result.source_transform,
+            source_shape=result.source_shape,
             segments=segments,
         )

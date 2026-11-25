@@ -8,6 +8,7 @@ from pyproj import Transformer
 from rasterio.crs import CRS
 
 from lineament_analyzer.algorithms.lsd import LsdParameters, detect
+from lineament_analyzer.algorithms.results import build_detection_result
 from lineament_analyzer.data.dem import Dem
 from lineament_analyzer.export.geojson import export_geojson
 
@@ -72,3 +73,77 @@ def test_invalid_export_preserves_file(tmp_path):
     with pytest.raises(ValueError):
         export_geojson(path, dem, np.array([[0, 0, np.nan, 1]]))
     assert path.read_text() == "original"
+
+
+def test_export_multiple_detection_results_with_provenance(tmp_path):
+    dem = Dem(
+        np.zeros((50, 50)),
+        np.ones((50, 50), bool),
+        Affine(10, 0, 500000, 0, -10, 4500000),
+        CRS.from_epsg(32633),
+        None,
+        "m",
+    )
+    lines = np.array([[1, 2, 30, 2], [2, 3, 20, 20]], dtype=float)
+    canny = build_detection_result(
+        dem,
+        lines[:1],
+        algorithm_id="canny-hough",
+        parameters={"min_segment_length_m": 100},
+        properties=[{"edge_support_fraction": 0.5}],
+    )
+    edlines = build_detection_result(
+        dem,
+        lines[1:],
+        algorithm_id="edlines",
+        parameters={"sigma": 1.4},
+        confidences=[0.8],
+    )
+    path = tmp_path / "combined.geojson"
+    export_geojson(path, dem, [canny, edlines])
+    features = json.loads(path.read_text())["features"]
+    assert len(features) == 2
+    first = features[0]["properties"]
+    assert first["method"] == "Canny + Hough"
+    assert first["algorithm_id"] == "canny-hough"
+    assert first["parameters"]["min_segment_length_m"] == 100
+    assert first["detection_properties"]["edge_support_fraction"] == 0.5
+    assert first["confidence"] is None
+    second = features[1]["properties"]
+    assert second["algorithm_id"] == "edlines"
+    assert second["parameters"]["sigma"] == 1.4
+    assert second["confidence"] == 0.8
+    assert second["length_m"] == pytest.approx(edlines.segments[0].length_m)
+    assert 0 <= second["azimuth_deg"] < 360
+    assert 0 <= second["orientation_deg"] < 180
+
+
+def test_export_rejects_detection_result_from_a_different_crs(tmp_path):
+    first_dem = Dem(
+        np.zeros((10, 10)), np.ones((10, 10), bool), Affine.identity(), CRS.from_epsg(4326), None
+    )
+    other_dem = Dem(
+        np.zeros((10, 10)), np.ones((10, 10), bool), Affine.identity(), CRS.from_epsg(32633), None
+    )
+    result = build_detection_result(other_dem, [[1, 1, 5, 5]], algorithm_id="test", parameters={})
+    with pytest.raises(ValueError, match="CRS does not match"):
+        export_geojson(tmp_path / "invalid.geojson", first_dem, result)
+
+    same_crs_different_raster = Dem(
+        np.zeros((10, 10)),
+        np.ones((10, 10), bool),
+        Affine(2, 0, 100, 0, -2, 100),
+        CRS.from_epsg(32633),
+        None,
+    )
+    same_crs_result = build_detection_result(
+        same_crs_different_raster,
+        [[1, 1, 5, 5]],
+        algorithm_id="test",
+        parameters={},
+    )
+    base_utm = Dem(
+        np.zeros((10, 10)), np.ones((10, 10), bool), Affine.identity(), CRS.from_epsg(32633), None
+    )
+    with pytest.raises(ValueError, match="raster does not match"):
+        export_geojson(tmp_path / "invalid-affine.geojson", base_utm, same_crs_result)

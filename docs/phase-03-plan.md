@@ -75,4 +75,5 @@
 - Phase 1 shared contract: complete. Existing and new tests pass (59 total); Ruff passes. Commit: `094ef32`.
 - Phase 2 Canny–Hough: complete. Synthetic coverage is included; full suite: 76 passed, Ruff passed. Commit: pending.
 - Phase 3 EDLines: complete. Independent detector, contrib dependency, real-backend synthetic tests and explicit missing-backend behavior are implemented. Full suite: 99 passed; Ruff and installed self-test passed. Commit: pending.
-- Phase 4 GUI/export and Phase 5 release validation: not started.
+- Phase 4 GUI/export: implemented and covered by localized workflow, comparison, cancellation, geospatial export, provenance and legacy compatibility tests. Full suite currently: 103 passed; Ruff passed. Final stage commit is pending.
+- Phase 5 release validation: not started.

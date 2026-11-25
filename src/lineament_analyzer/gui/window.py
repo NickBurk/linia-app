@@ -1,5 +1,6 @@
-"""Main Qt window for raster inspection and LSD detection."""
+"""Main Qt window for georeferenced line detection and comparison."""
 
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -7,9 +8,11 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
@@ -19,50 +22,107 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from lineament_analyzer.algorithms.lsd import LsdParameters, detect
+from lineament_analyzer.algorithms.canny_hough import (
+    CannyHoughDetector,
+    CannyHoughParameters,
+)
+from lineament_analyzer.algorithms.edlines import EdLinesDetector, EdLinesParameters
+from lineament_analyzer.algorithms.lsd import LsdDetector, LsdParameters
+from lineament_analyzer.algorithms.results import DetectionResult
 from lineament_analyzer.core.windowed import check_cancel, process_dem
 from lineament_analyzer.data.dem import Dem, load_preview
 from lineament_analyzer.export.geojson import export_geojson
 from lineament_analyzer.gui.tasks import Task
 
 TEXT = {
-    "ru": [
-        "Открыть GeoTIFF",
-        "Слой",
-        "Высота",
-        "Теневой рельеф",
-        "Уклон",
-        "Экспозиция",
-        "TPI",
-        "LSD",
-        "Минимальная длина",
-        "Линеаменты",
-        "Язык",
-        "Экспорт GeoJSON",
-    ],
-    "en": [
-        "Open GeoTIFF",
-        "Layer",
-        "Elevation",
-        "Hillshade",
-        "Slope",
-        "Aspect",
-        "TPI",
-        "LSD",
-        "Minimum length",
-        "Lineaments",
-        "Language",
-        "Export GeoJSON",
-    ],
+    "ru": {
+        "open": "Открыть GeoTIFF",
+        "layer": "Слой",
+        "algorithm": "Алгоритм",
+        "algorithms": ["LSD", "Canny + Hough", "EDLines"],
+        "run": "Обнаружить",
+        "results": "Сравнение результатов",
+        "all_results": "Все алгоритмы",
+        "export": "Экспорт GeoJSON",
+        "language": "Язык",
+        "length": "Минимальная длина (пиксели предпросмотра)",
+        "canny_low": "Порог Canny: нижний",
+        "canny_high": "Порог Canny: верхний",
+        "canny_aperture": "Размер апертуры",
+        "canny_l2": "Градиент L2",
+        "hough_votes": "Порог голосов Hough",
+        "minimum_m": "Минимальная длина (м)",
+        "gap_m": "Максимальный разрыв (м)",
+        "ed_sigma": "Sigma",
+        "ed_gradient": "Порог градиента",
+        "ed_anchor": "Порог anchor",
+        "ed_path": "Минимальная длина пути (px)",
+        "ed_line_fit": "Порог ошибки аппроксимации",
+        "ed_max_error": "Максимальная ошибка",
+        "ed_distance": "Максимальное расстояние (px)",
+        "ed_nfa": "NFA validation",
+        "ed_pf": "PF mode",
+        "ed_operator": "Оператор границ",
+        "ed_scan": "Интервал сканирования",
+        "units": "Единицы высот",
+        "apply": "Применить",
+        "cancel": "Отмена",
+        "saved": "GeoJSON сохранён",
+        "cancelled": "Отменено",
+    },
+    "en": {
+        "open": "Open GeoTIFF",
+        "layer": "Layer",
+        "algorithm": "Algorithm",
+        "algorithms": ["LSD", "Canny + Hough", "EDLines"],
+        "run": "Detect",
+        "results": "Compare results",
+        "all_results": "All algorithms",
+        "export": "Export GeoJSON",
+        "language": "Language",
+        "length": "Minimum length (preview pixels)",
+        "canny_low": "Canny low threshold",
+        "canny_high": "Canny high threshold",
+        "canny_aperture": "Aperture size",
+        "canny_l2": "L2 gradient",
+        "hough_votes": "Hough vote threshold",
+        "minimum_m": "Minimum segment length (m)",
+        "gap_m": "Maximum gap (m)",
+        "ed_sigma": "Sigma",
+        "ed_gradient": "Gradient threshold",
+        "ed_anchor": "Anchor threshold",
+        "ed_path": "Minimum path length (px)",
+        "ed_line_fit": "Line fit error threshold",
+        "ed_max_error": "Maximum error threshold",
+        "ed_distance": "Maximum line distance (px)",
+        "ed_nfa": "NFA validation",
+        "ed_pf": "PF mode",
+        "ed_operator": "Edge operator",
+        "ed_scan": "Scan interval",
+        "units": "Elevation units",
+        "apply": "Apply",
+        "cancel": "Cancel",
+        "saved": "GeoJSON saved",
+        "cancelled": "Cancelled",
+    },
+}
+
+ALGORITHM_NAMES = {"lsd": "LSD", "canny-hough": "Canny + Hough", "edlines": "EDLines"}
+ALGORITHM_COLORS = {
+    "lsd": Qt.GlobalColor.red,
+    "canny-hough": Qt.GlobalColor.darkGreen,
+    "edlines": Qt.GlobalColor.blue,
 }
 
 
 class MainWindow(QMainWindow):
-    """Interactive DEM viewer with localized controls."""
+    """DEM viewer with three asynchronous line detectors and result overlays."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -74,42 +134,53 @@ class MainWindow(QMainWindow):
         self.dem: Dem | None = None
         self.image: np.ndarray | None = None
         self.segments = np.empty((0, 4), dtype=float)
+        self.results_by_algorithm: dict[str, DetectionResult] = {}
         self.language = "ru"
         self.scene = QGraphicsScene(self)
         self.view = QGraphicsView(self.scene)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+
         self.open_button = QPushButton()
         self.open_button.clicked.connect(self.open_file)
         self.layer_label = QLabel()
         self.layer = QComboBox()
         self.layer.currentIndexChanged.connect(self.render)
-        self.length_label = QLabel()
-        self.min_length = QDoubleSpinBox()
-        self.min_length.setRange(1, 100000)
-        self.min_length.setValue(10)
+        self.algorithm_label = QLabel()
+        self.algorithm_box = QComboBox()
+        self.algorithm_box.currentIndexChanged.connect(self.algorithm_changed)
         self.detect_button = QPushButton()
-        self.detect_button.clicked.connect(self.run_lsd)
+        self.detect_button.clicked.connect(self.run_detection)
+        self.result_label = QLabel()
+        self.result_view_box = QComboBox()
+        self.result_view_box.currentIndexChanged.connect(self.draw_result_overlays)
         self.export_button = QPushButton()
         self.export_button.clicked.connect(self.save_geojson)
         self.language_label = QLabel()
         self.language_box = QComboBox()
         self.language_box.addItems(["Русский", "English"])
         self.language_box.currentIndexChanged.connect(self.change_language)
+
         controls = QHBoxLayout()
         for widget in (
             self.open_button,
             self.layer_label,
             self.layer,
-            self.length_label,
-            self.min_length,
+            self.algorithm_label,
+            self.algorithm_box,
             self.detect_button,
+            self.result_label,
+            self.result_view_box,
             self.export_button,
             self.language_label,
             self.language_box,
         ):
             controls.addWidget(widget)
-        layout = QVBoxLayout()
-        layout.addLayout(controls)
+
+        self.parameter_stack = QStackedWidget()
+        self._build_lsd_parameters()
+        self._build_canny_parameters()
+        self._build_edlines_parameters()
+
         self.unit_box = QComboBox()
         self.unit_box.addItems(["Auto", "m", "ft", "us survey foot", "cm", "mm"])
         self.z_factor = QDoubleSpinBox()
@@ -124,6 +195,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.clicked.connect(self.cancel_task)
         self.cancel_button.setEnabled(False)
         self.progress = QProgressBar()
+
         processing = QHBoxLayout()
         for widget in (
             self.unit_label,
@@ -135,47 +207,192 @@ class MainWindow(QMainWindow):
             self.cancel_button,
         ):
             processing.addWidget(widget)
+
+        layout = QVBoxLayout()
+        layout.addLayout(controls)
+        layout.addWidget(self.parameter_stack)
         layout.addLayout(processing)
         layout.addWidget(self.view)
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
-        self.resize(1100, 750)
+        self.resize(1250, 820)
         self.change_language(0)
 
+    def _spin(self, minimum, maximum, value, *, decimals=0, step=None):
+        control = QDoubleSpinBox() if decimals else QSpinBox()
+        control.setRange(minimum, maximum)
+        if decimals:
+            control.setDecimals(decimals)
+        control.setValue(value)
+        if step is not None:
+            control.setSingleStep(step)
+        return control
+
+    def _build_lsd_parameters(self):
+        page = QWidget()
+        form = QFormLayout(page)
+        self.length_label = QLabel()
+        self.min_length = self._spin(1, 100000, 10, decimals=1, step=1)
+        form.addRow(self.length_label, self.min_length)
+        self.parameter_stack.addWidget(page)
+
+    def _build_canny_parameters(self):
+        page = QWidget()
+        form = QFormLayout(page)
+        self.canny_low = self._spin(0, 255, 30, decimals=1)
+        self.canny_high = self._spin(1, 255, 90, decimals=1)
+        self.canny_aperture = QComboBox()
+        self.canny_aperture.addItems(["3", "5", "7"])
+        self.canny_l2 = QCheckBox()
+        self.canny_l2.setChecked(True)
+        self.canny_l2_label = QLabel()
+        self.hough_votes = self._spin(1, 10000, 20)
+        self.canny_min_length = self._spin(0.1, 10000000, 100, decimals=1, step=10)
+        self.canny_max_gap = self._spin(0, 1000000, 20, decimals=1, step=5)
+        self.canny_labels = {
+            "canny_low": QLabel(),
+            "canny_high": QLabel(),
+            "canny_aperture": QLabel(),
+            "hough_votes": QLabel(),
+            "minimum_m": QLabel(),
+            "gap_m": QLabel(),
+        }
+        form.addRow(self.canny_labels["canny_low"], self.canny_low)
+        form.addRow(self.canny_labels["canny_high"], self.canny_high)
+        form.addRow(self.canny_labels["canny_aperture"], self.canny_aperture)
+        form.addRow(self.canny_l2_label, self.canny_l2)
+        form.addRow(self.canny_labels["hough_votes"], self.hough_votes)
+        form.addRow(self.canny_labels["minimum_m"], self.canny_min_length)
+        form.addRow(self.canny_labels["gap_m"], self.canny_max_gap)
+        self.parameter_stack.addWidget(page)
+
+    def _build_edlines_parameters(self):
+        page = QWidget()
+        form = QFormLayout(page)
+        self.ed_sigma = self._spin(0.1, 10, 1, decimals=2, step=0.1)
+        self.ed_gradient = self._spin(1, 255, 20)
+        self.ed_anchor = self._spin(0, 255, 0)
+        self.ed_path = self._spin(1, 100000, 10)
+        self.ed_min_length = self._spin(0.1, 10000000, 100, decimals=1, step=10)
+        self.ed_line_fit_error = self._spin(0.01, 1000, 1, decimals=2, step=0.1)
+        self.ed_max_error = self._spin(0.01, 1000, 1.3, decimals=2, step=0.1)
+        self.ed_max_distance = self._spin(0, 10000, 6, decimals=1, step=1)
+        self.ed_nfa = QCheckBox()
+        self.ed_nfa.setChecked(True)
+        self.ed_pf = QCheckBox()
+        self.ed_operator = QComboBox()
+        self.ed_operator.addItems(["PREWITT", "SOBEL", "SCHARR"])
+        self.ed_scan = self._spin(1, 1000, 1)
+        self.ed_labels = {
+            key: QLabel()
+            for key in (
+                "ed_sigma",
+                "ed_gradient",
+                "ed_anchor",
+                "ed_path",
+                "minimum_m",
+                "ed_line_fit",
+                "ed_max_error",
+                "ed_distance",
+                "ed_nfa",
+                "ed_pf",
+                "ed_operator",
+                "ed_scan",
+            )
+        }
+        rows = (
+            ("ed_sigma", self.ed_sigma),
+            ("ed_gradient", self.ed_gradient),
+            ("ed_anchor", self.ed_anchor),
+            ("ed_path", self.ed_path),
+            ("minimum_m", self.ed_min_length),
+            ("ed_line_fit", self.ed_line_fit_error),
+            ("ed_max_error", self.ed_max_error),
+            ("ed_distance", self.ed_max_distance),
+            ("ed_nfa", self.ed_nfa),
+            ("ed_pf", self.ed_pf),
+            ("ed_operator", self.ed_operator),
+            ("ed_scan", self.ed_scan),
+        )
+        for key, control in rows:
+            form.addRow(self.ed_labels[key], control)
+        self.parameter_stack.addWidget(page)
+
     def change_language(self, index: int) -> None:
-        """Update visible text without restarting Qt."""
+        """Update controls while preserving the selected detector and result view."""
         self.language = "ru" if index == 0 else "en"
-        self.unit_label.setText("Единицы высот" if index == 0 else "Elevation units")
-        self.apply_button.setText("Применить" if index == 0 else "Apply")
-        self.cancel_button.setText("Отмена" if index == 0 else "Cancel")
         labels = TEXT[self.language]
         self.setWindowTitle("Lineament Analyzer")
-        self.open_button.setText(labels[0])
-        self.layer_label.setText(labels[1])
-        self.length_label.setText(
-            labels[8] + (" (px предпросмотра)" if index == 0 else " (preview px)")
-        )
-        self.detect_button.setText(labels[9])
-        self.language_label.setText(labels[10])
-        self.export_button.setText(labels[11])
-        selected = self.layer.currentIndex()
+        self.open_button.setText(labels["open"])
+        self.layer_label.setText(labels["layer"])
+        self.algorithm_label.setText(labels["algorithm"])
+        self.detect_button.setText(labels["run"])
+        self.result_label.setText(labels["results"])
+        self.export_button.setText(labels["export"])
+        self.language_label.setText(labels["language"])
+        self.length_label.setText(labels["length"])
+        self.unit_label.setText(labels["units"])
+        self.apply_button.setText(labels["apply"])
+        self.cancel_button.setText(labels["cancel"])
+
+        selected_algorithm = self.algorithm_box.currentData() or "lsd"
+        self.algorithm_box.blockSignals(True)
+        self.algorithm_box.clear()
+        for algorithm_id, name in zip(ALGORITHM_NAMES, labels["algorithms"], strict=True):
+            self.algorithm_box.addItem(name, algorithm_id)
+        self.algorithm_box.setCurrentIndex(max(0, self.algorithm_box.findData(selected_algorithm)))
+        self.algorithm_box.blockSignals(False)
+
+        selected_layer = max(0, self.layer.currentIndex())
         self.layer.blockSignals(True)
         self.layer.clear()
-        self.layer.addItems(labels[2:7])
-        self.layer.setCurrentIndex(max(0, selected))
+        self.layer.addItems(
+            ["Высота", "Теневой рельеф", "Уклон", "Экспозиция", "TPI"]
+            if index == 0
+            else ["Elevation", "Hillshade", "Slope", "Aspect", "TPI"]
+        )
+        self.layer.setCurrentIndex(selected_layer)
         self.layer.blockSignals(False)
+        self.canny_l2_label.setText(labels["canny_l2"])
+        self.ed_nfa.setText(labels["ed_nfa"])
+        self.ed_pf.setText(labels["ed_pf"])
+        for key, label in self.canny_labels.items():
+            label.setText(labels[key])
+        for key, label in self.ed_labels.items():
+            label.setText(labels[key])
+        self.refresh_result_choices()
+        self.algorithm_changed(self.algorithm_box.currentIndex())
+
+    def algorithm_changed(self, index):
+        self.parameter_stack.setCurrentIndex(max(0, index))
+
+    def refresh_result_choices(self):
+        previous = self.result_view_box.currentData() if self.result_view_box.count() else "all"
+        self.result_view_box.blockSignals(True)
+        self.result_view_box.clear()
+        self.result_view_box.addItem(TEXT[self.language]["all_results"], "all")
+        for algorithm_id, result in self.results_by_algorithm.items():
+            self.result_view_box.addItem(
+                f"{ALGORITHM_NAMES[algorithm_id]} ({len(result.segments)})", algorithm_id
+            )
+        index = self.result_view_box.findData(previous)
+        self.result_view_box.setCurrentIndex(max(index, 0))
+        self.result_view_box.blockSignals(False)
+        self.draw_result_overlays()
 
     def set_busy(self, busy):
         for widget in (
             self.open_button,
             self.layer,
+            self.algorithm_box,
+            self.parameter_stack,
             self.detect_button,
+            self.result_view_box,
             self.export_button,
             self.unit_box,
             self.z_factor,
             self.apply_button,
-            self.min_length,
         ):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
@@ -209,7 +426,10 @@ class MainWindow(QMainWindow):
         self.progress.setValue(value)
 
     def show_cancelled(self):
-        self.statusBar().showMessage("Отменено / Cancelled")
+        message = TEXT[self.language]["cancelled"]
+        if self.language == "ru":
+            message += " / Cancelled"
+        self.statusBar().showMessage(message)
 
     def cancel_task(self):
         if self.task is not None:
@@ -245,7 +465,6 @@ class MainWindow(QMainWindow):
             self.load_path(path)
 
     def load_path(self, path):
-        # Shared entry point for file dialog and automated GUI checks.
         self.start_task(
             lambda progress, cancel: self.prepare_layer(path, "elevation", {}, cancel, progress),
             self.accept_layer,
@@ -284,10 +503,13 @@ class MainWindow(QMainWindow):
     def accept_layer(self, result):
         if self.closing:
             return
-        path, kind, parameters, self.dem, self.image, gray = result
+        path, kind, parameters, preview, image, gray = result
+        if path != self.source:
+            self.results_by_algorithm.clear()
+            self.segments = np.empty((0, 4), dtype=float)
+        self.dem, self.image = preview, image
         self.source = path
         self.parameters = {"layer": kind, **parameters, "preview_shape": list(self.image.shape)}
-        self.segments = np.empty((0, 4), dtype=float)
         self.layer.blockSignals(True)
         self.layer.setCurrentIndex(["elevation", "hillshade", "slope", "aspect", "tpi"].index(kind))
         self.layer.blockSignals(False)
@@ -297,42 +519,116 @@ class MainWindow(QMainWindow):
         self.scene.addItem(QGraphicsPixmapItem(QPixmap.fromImage(qimage)))
         self.scene.setSceneRect(0, 0, width, height)
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.refresh_result_choices()
 
-    def run_lsd(self):
+    def _selected_parameters(self, algorithm_id):
+        if algorithm_id == "lsd":
+            return LsdParameters(self.min_length.value())
+        if algorithm_id == "canny-hough":
+            return CannyHoughParameters(
+                canny_low_threshold=self.canny_low.value(),
+                canny_high_threshold=self.canny_high.value(),
+                aperture_size=int(self.canny_aperture.currentText()),
+                l2_gradient=self.canny_l2.isChecked(),
+                hough_threshold=self.hough_votes.value(),
+                min_segment_length_m=self.canny_min_length.value(),
+                max_gap_m=self.canny_max_gap.value(),
+            )
+        return EdLinesParameters(
+            sigma=self.ed_sigma.value(),
+            gradient_threshold=self.ed_gradient.value(),
+            anchor_threshold=self.ed_anchor.value(),
+            min_path_length_px=self.ed_path.value(),
+            min_segment_length_m=self.ed_min_length.value(),
+            line_fit_error_threshold=self.ed_line_fit_error.value(),
+            max_error_threshold=self.ed_max_error.value(),
+            max_distance_between_lines_px=self.ed_max_distance.value(),
+            nfa_validation=self.ed_nfa.isChecked(),
+            pf_mode=self.ed_pf.isChecked(),
+            edge_operator=self.ed_operator.currentText(),
+            scan_interval=self.ed_scan.value(),
+        )
+
+    def run_detection(self):
         if self.dem is None or self.image is None:
             return
-        image, valid = self.image, self.dem.valid
-        params = LsdParameters(self.min_length.value())
-        self.start_task(lambda progress, cancel: detect(image, valid, params), self.accept_lines)
+        algorithm_id = self.algorithm_box.currentData()
+        parameters = self._selected_parameters(algorithm_id)
+        detector = {
+            "lsd": LsdDetector(),
+            "canny-hough": CannyHoughDetector(),
+            "edlines": EdLinesDetector(),
+        }[algorithm_id]
+        analysis_dem = replace(
+            self.dem,
+            values=self.image,
+            valid=self.dem.valid & np.isfinite(self.image),
+        )
+        self.start_task(
+            lambda progress, cancel: detector.run(
+                analysis_dem, parameters, progress=progress, cancel=cancel
+            ),
+            self.accept_detection,
+        )
 
-    def accept_lines(self, lines):
+    def run_lsd(self):
+        """Backward-compatible entry point retained for existing callers/tests."""
+        self.algorithm_box.setCurrentIndex(self.algorithm_box.findData("lsd"))
+        self.run_detection()
+
+    def accept_detection(self, result: DetectionResult):
         if self.closing:
             return
-        self.segments = lines
-        # A single graphics path keeps the scene responsive for many segments.
+        self.results_by_algorithm[result.algorithm_id] = result
+        self.segments = result.as_pixel_array()
+        self.parameters.update(
+            algorithm_id=result.algorithm_id,
+            detector_parameters=dict(result.parameters),
+        )
+        self.refresh_result_choices()
+        self.statusBar().showMessage(
+            f"{ALGORITHM_NAMES[result.algorithm_id]}: {len(result.segments)}"
+        )
+
+    def draw_result_overlays(self, *_):
         for item in self.scene.items():
             if not isinstance(item, QGraphicsPixmapItem):
                 self.scene.removeItem(item)
-        path = QPainterPath()
-        for x1, y1, x2, y2 in lines:
-            path.moveTo(x1 + 0.5, y1 + 0.5)
-            path.lineTo(x2 + 0.5, y2 + 0.5)
-        pen = QPen(Qt.GlobalColor.red)
-        pen.setCosmetic(True)
-        self.scene.addPath(path, pen)
-        self.parameters.update(min_length=self.min_length.value(), scale=0.8)
-        self.statusBar().showMessage(f"LSD: {len(lines)} | preview pixels / пиксели предпросмотра")
+        selected = self.result_view_box.currentData() if self.result_view_box.count() else "all"
+        algorithm_ids = (
+            list(self.results_by_algorithm)
+            if selected == "all"
+            else [selected]
+            if selected in self.results_by_algorithm
+            else []
+        )
+        for algorithm_id in algorithm_ids:
+            path = QPainterPath()
+            for segment in self.results_by_algorithm[algorithm_id].segments:
+                x1, y1 = segment.pixel_start
+                x2, y2 = segment.pixel_end
+                path.moveTo(x1 + 0.5, y1 + 0.5)
+                path.lineTo(x2 + 0.5, y2 + 0.5)
+            pen = QPen(ALGORITHM_COLORS[algorithm_id])
+            pen.setCosmetic(True)
+            self.scene.addPath(path, pen)
 
     def save_geojson(self):
-        if self.dem is None or len(self.segments) == 0:
+        if self.dem is None or not self.results_by_algorithm:
             return
         path, _ = QFileDialog.getSaveFileName(self, "GeoJSON", "", "GeoJSON (*.geojson)")
         if path:
-            dem, segments, parameters = self.dem, self.segments.copy(), self.parameters.copy()
+            selected = self.result_view_box.currentData()
+            results = (
+                list(self.results_by_algorithm.values())
+                if selected == "all"
+                else [self.results_by_algorithm[selected]]
+            )
+            dem = self.dem
             self.start_task(
-                lambda progress, cancel: export_geojson(path, dem, segments, parameters=parameters),
+                lambda progress, cancel: export_geojson(path, dem, results),
                 self.export_finished,
             )
 
     def export_finished(self, result):
-        self.statusBar().showMessage("GeoJSON сохранён / saved")
+        self.statusBar().showMessage(TEXT[self.language]["saved"])

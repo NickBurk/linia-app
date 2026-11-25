@@ -53,7 +53,8 @@ def test_actual_edlines_backend_detects_cardinal_and_diagonal_lines(start, end, 
     assert min(orientation_distance(s.orientation_deg, expected) for s in result.segments) < 3
     assert all(s.algorithm_id == "edlines" for s in result.segments)
     assert all(s.length_m >= 300 for s in result.segments)
-    assert all(s.confidence is None for s in result.segments)
+    assert all(s.confidence is not None and 0 <= s.confidence <= 1 for s in result.segments)
+    assert all("edge_support_fraction" in s.properties for s in result.segments)
 
 
 def test_crossing_and_parallel_lines():
@@ -121,9 +122,7 @@ def test_short_segments_are_filtered_using_metric_length():
     image = np.zeros((120, 180), dtype=float)
     cv2.line(image, (15, 35), (60, 35), 100, 4)
     cv2.line(image, (15, 85), (165, 85), 100, 4)
-    result = EdLinesDetector().run(
-        make_dem(image), params(min_segment_length_m=300)
-    )
+    result = EdLinesDetector().run(make_dem(image), params(min_segment_length_m=300))
     assert result.segments
     assert all(segment.length_m >= 300 for segment in result.segments)
     assert all(
@@ -179,6 +178,11 @@ def test_parameter_values_are_passed_to_edlines_backend(monkeypatch):
 
         def detectLines(self):
             return np.array([[[20, 20, 100, 20]]], dtype=np.float32)
+
+        def getEdgeImage(self):
+            edge_image = np.zeros((120, 120), dtype=np.uint8)
+            edge_image[20, 20:101] = 255
+            return edge_image
 
     monkeypatch.setattr(cv2.ximgproc, "createEdgeDrawing", lambda: FakeBackend())
     image = np.zeros((120, 120), dtype=float)

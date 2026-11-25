@@ -12,7 +12,7 @@ from lineament_analyzer.algorithms.results import (
     parameters_dict,
 )
 from lineament_analyzer.algorithms.spatial import pixel_size_metres
-from lineament_analyzer.algorithms.support import sample_valid_support
+from lineament_analyzer.algorithms.support import detector_support_mask, sample_mask_support
 from lineament_analyzer.core.windowed import check_cancel
 from lineament_analyzer.data.dem import Dem
 
@@ -121,9 +121,10 @@ def detect(
 
     segments = lines.reshape(-1, 4).astype(float)
     erosion_radius = max(2, parameters.aperture_size // 2)
+    safe_mask = detector_support_mask(mask, radius=erosion_radius)
     accepted, support_fractions = [], []
     for segment in segments:
-        samples = sample_valid_support(mask, segment, radius=erosion_radius)
+        samples = sample_mask_support(safe_mask, segment)
         if samples is None:
             continue
         x, y = samples
@@ -164,6 +165,7 @@ class CannyHoughDetector:
             pixels,
             algorithm_id=self.algorithm_id,
             parameters={**parameters_dict(parameters), "metric_pixel_size_m": scale},
+            confidences=supports,
             properties=[{"edge_support_fraction": float(value)} for value in supports],
         )
         check_cancel(cancel)
@@ -178,5 +180,7 @@ class CannyHoughDetector:
             algorithm_id=result.algorithm_id,
             parameters=result.parameters,
             source_crs_wkt=result.source_crs_wkt,
+            source_transform=result.source_transform,
+            source_shape=result.source_shape,
             segments=keep,
         )

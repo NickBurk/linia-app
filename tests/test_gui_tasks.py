@@ -128,3 +128,52 @@ def test_real_gui_load_terrain_lsd(app, tmp_path):
     assert len(window.segments) > 0
     assert len(window.scene.items()) == 2
     window.close()
+
+
+def test_gui_runs_and_compares_canny_hough_and_edlines(app, tmp_path):
+    path = tmp_path / "line-dem.tif"
+    image = np.zeros((160, 160), dtype=np.float32)
+    image[76:84, 15:145] = 100
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=160,
+        width=160,
+        count=1,
+        dtype="float32",
+        crs="EPSG:32633",
+        transform=from_origin(500000, 4500000, 5, 5),
+    ) as dst:
+        dst.write(image, 1)
+        dst.set_band_unit(1, "m")
+
+    window = MainWindow()
+    window.load_path(path)
+    wait_for(app, lambda: window.task is None)
+    window.algorithm_box.setCurrentIndex(window.algorithm_box.findData("canny-hough"))
+    assert window.parameter_stack.currentIndex() == 1
+    window.canny_min_length.setValue(200)
+    window.hough_votes.setValue(10)
+    window.run_detection()
+    wait_for(app, lambda: window.task is None)
+    assert window.results_by_algorithm["canny-hough"].segments
+
+    window.algorithm_box.setCurrentIndex(window.algorithm_box.findData("edlines"))
+    assert window.parameter_stack.currentIndex() == 2
+    window.ed_min_length.setValue(200)
+    window.ed_gradient.setValue(12)
+    window.run_detection()
+    wait_for(app, lambda: window.task is None)
+    assert window.results_by_algorithm["edlines"].segments
+    assert window.result_view_box.currentData() == "all"
+    assert len(window.scene.items()) == 3
+
+    window.result_view_box.setCurrentIndex(window.result_view_box.findData("canny-hough"))
+    assert len(window.scene.items()) == 2
+    window.result_view_box.setCurrentIndex(window.result_view_box.findData("all"))
+    assert len(window.scene.items()) == 3
+    window.language_box.setCurrentIndex(1)
+    assert window.algorithm_box.currentData() == "edlines"
+    assert window.result_view_box.itemText(0) == "All algorithms"
+    window.close()

@@ -50,6 +50,10 @@ def test_result_uses_pixel_centres_affine_and_geodesic_metrics(epsg):
     assert segment.confidence == 0.75
     assert segment.properties == {"votes": 12}
     assert result.source_crs_wkt == crs.to_wkt()
+    with pytest.raises(TypeError):
+        result.parameters["threshold"] = 6
+    with pytest.raises(TypeError):
+        segment.properties["votes"] = 20
 
 
 def test_unknown_crs_keeps_source_coordinates_and_marks_metrics_unknown():

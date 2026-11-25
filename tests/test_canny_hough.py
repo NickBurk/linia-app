@@ -59,7 +59,7 @@ def test_detects_horizontal_vertical_and_diagonal_ridges(start, end, expected):
     assert all(s.length_m >= 300 for s in result.segments)
     assert all(s.algorithm_id == "canny-hough" for s in result.segments)
     assert all("edge_support_fraction" in s.properties for s in result.segments)
-    assert all(s.confidence is None for s in result.segments)
+    assert all(s.confidence is not None and 0 <= s.confidence <= 1 for s in result.segments)
 
 
 def test_crossing_and_parallel_structures_keep_both_orientations():
@@ -120,6 +120,24 @@ def test_nodata_gap_and_hole_boundaries_are_not_reported_as_supported_lines():
     )
 
 
+def test_maximum_gap_is_converted_from_metres_to_preview_pixels():
+    import cv2
+
+    image = np.zeros((160, 180), dtype=float)
+    cv2.line(image, (10, 80), (70, 80), 100, 4)
+    cv2.line(image, (78, 80), (170, 80), 100, 4)
+    dem = make_dem(image)
+    short_gap = CannyHoughDetector().run(
+        dem, params(min_segment_length_m=500, max_gap_m=20)
+    )
+    long_gap = CannyHoughDetector().run(
+        dem, params(min_segment_length_m=500, max_gap_m=40)
+    )
+    assert not short_gap.segments
+    assert long_gap.segments
+    assert max(segment.length_m for segment in long_gap.segments) > 750
+
+
 def test_map_length_parameters_scale_across_dem_resolutions():
     import cv2
 
@@ -146,9 +164,7 @@ def test_short_segments_are_filtered_using_metric_length():
     image = np.zeros((120, 180), dtype=float)
     cv2.line(image, (15, 35), (60, 35), 100, 4)
     cv2.line(image, (15, 85), (165, 85), 100, 4)
-    result = CannyHoughDetector().run(
-        make_dem(image), params(min_segment_length_m=300)
-    )
+    result = CannyHoughDetector().run(make_dem(image), params(min_segment_length_m=300))
     assert result.segments
     assert all(segment.length_m >= 300 for segment in result.segments)
     assert all(

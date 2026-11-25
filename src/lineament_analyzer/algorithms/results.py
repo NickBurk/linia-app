@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -44,6 +45,8 @@ class DetectionResult:
     algorithm_id: str
     parameters: Mapping[str, Any]
     source_crs_wkt: str | None
+    source_transform: tuple[float, float, float, float, float, float]
+    source_shape: tuple[int, int]
     segments: tuple[LineSegment, ...]
 
     def as_pixel_array(self) -> np.ndarray:
@@ -191,12 +194,14 @@ def build_detection_result(
                 if confidence_values[index] is not None
                 else None,
                 algorithm_id=algorithm_id,
-                properties=dict(property_values[index]),
+                properties=MappingProxyType(dict(property_values[index])),
             )
         )
     return DetectionResult(
         algorithm_id=algorithm_id,
-        parameters=parameters_dict(parameters),
+        parameters=MappingProxyType(parameters_dict(parameters)),
         source_crs_wkt=dem.crs.to_wkt() if dem.crs is not None else None,
+        source_transform=tuple(float(value) for value in tuple(dem.transform)[:6]),
+        source_shape=(int(height), int(width)),
         segments=tuple(result_segments),
     )
