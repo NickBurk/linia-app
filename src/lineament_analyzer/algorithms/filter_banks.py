@@ -193,6 +193,8 @@ def response_map(dem, p, algorithm, *, progress=None, cancel=None):
     if not 1 <= p.levels <= 5 or not 0 < p.threshold <= 1:
         raise ValueError("Invalid response levels or threshold")
     check_cancel(cancel)
+    if algorithm == "log-gabor" and not 0.03 <= p.first_frequency <= 0.45:
+        raise ValueError("Invalid Log-Gabor central frequency")
     image, valid = _filled(dem)
     image = image - float(image[valid].mean()) if valid.any() else image
     if algorithm == "directional":

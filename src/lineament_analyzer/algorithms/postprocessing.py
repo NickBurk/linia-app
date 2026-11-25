@@ -272,6 +272,7 @@ def merge_segments(
                     if result.segments[index].confidence is not None
                 ]))} if any(result.segments[index].confidence is not None for index in members) else {}),
                 "merged_from": members,
+                "original_geometries": [result.segments[index].coordinates for index in members],
             }
             for members in source_members
         ],

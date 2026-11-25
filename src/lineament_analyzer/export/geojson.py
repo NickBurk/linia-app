@@ -11,6 +11,7 @@ from rasterio.warp import transform as reproject_points
 
 from lineament_analyzer.algorithms.results import DetectionResult
 from lineament_analyzer.data.dem import Dem
+from lineament_analyzer.export.geometry import validate_coordinates, validate_result_grid
 
 
 def export_geojson(
@@ -36,11 +37,7 @@ def export_geojson(
         structured = list(segments)
     if structured is not None:
         for result in structured:
-            if result.source_crs_wkt != dem.crs.to_wkt():
-                raise ValueError("Detection result CRS does not match the export DEM")
-            transform = tuple(float(value) for value in tuple(dem.transform)[:6])
-            if result.source_transform != transform or result.source_shape != dem.values.shape:
-                raise ValueError("Detection result raster does not match the export DEM")
+            validate_result_grid(result, dem)
         records = [(result, segment) for result in structured for segment in result.segments]
         pixel_segments = np.asarray(
             [(*segment.pixel_start, *segment.pixel_end) for _, segment in records], dtype=float
@@ -54,10 +51,10 @@ def export_geojson(
         or not np.isfinite(pixel_segments).all()
     ):
         raise ValueError("Segments must be a finite Nx4 array")
-    height, width = dem.values.shape
     features = []
     geod = Geod(ellps="WGS84")
     for index, (x1, y1, x2, y2) in enumerate(pixel_segments):
+        height, width = records[index][0].source_shape if records is not None else dem.values.shape
         if not (0 <= x1 < width and 0 <= x2 < width and 0 <= y1 < height and 0 <= y2 < height):
             raise ValueError("Segment endpoints outside raster")
         if records is None:
@@ -78,8 +75,10 @@ def export_geojson(
                 "edlines": "EDLines",
             }.get(algorithm_id, algorithm_id)
             params = dict(result.parameters)
+        geometry = detector_segment.coordinates if detector_segment is not None else (first, second)
+        source = validate_coordinates(geometry)
         longitude, latitude = reproject_points(
-            dem.crs, "EPSG:4326", [first[0], second[0]], [first[1], second[1]]
+            dem.crs, "EPSG:4326", source[:, 0], source[:, 1]
         )
         coordinates = np.column_stack((longitude, latitude))
         if (
@@ -120,6 +119,8 @@ def export_geojson(
                     "confidence": confidence,
                     "pixel_endpoints": [float(x1), float(y1), float(x2), float(y2)],
                     "source_endpoints": [list(first), list(second)],
+                    "analysis": dict(result.analysis_metadata) if records is not None else {},
+                    "source_geometry": source.tolist(),
                     "parameters": params,
                     "detection_parameters": params,
                     "postprocessing_parameters": dict(result.postprocessing_parameters)
@@ -131,7 +132,10 @@ def export_geojson(
             }
         )
     content = json.dumps(
-        {"type": "FeatureCollection", "source_crs": dem.crs.to_wkt(), "features": features},
+        {
+            "type": "FeatureCollection", "source_crs": dem.crs.to_wkt(),
+            "dem": str(dem.path), "features": features,
+        },
         allow_nan=False,
         ensure_ascii=False,
     )

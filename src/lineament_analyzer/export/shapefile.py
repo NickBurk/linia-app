@@ -13,6 +13,7 @@ import shapefile
 
 from lineament_analyzer.algorithms.results import DetectionResult
 from lineament_analyzer.data.dem import Dem
+from lineament_analyzer.export.geometry import validate_coordinates, validate_result_grid
 
 
 def export_shapefile(
@@ -39,12 +40,8 @@ def export_shapefile(
         structured = None
     records = []
     if structured is not None:
-        transform = tuple(float(value) for value in tuple(dem.transform)[:6])
         for result in structured:
-            if result.source_crs_wkt != dem.crs.to_wkt():
-                raise ValueError("Detection result CRS does not match the export DEM")
-            if result.source_transform != transform or result.source_shape != dem.values.shape:
-                raise ValueError("Detection result raster does not match the export DEM")
+            validate_result_grid(result, dem)
             for segment in result.segments:
                 records.append((result, segment))
     else:
@@ -103,10 +100,9 @@ def export_shapefile(
                 orientation = segment.orientation_deg
                 confidence = segment.confidence
                 properties = dict(segment.properties)
-            if not np.isfinite([*start, *end]).all():
-                raise ValueError("Segment source coordinates must be finite")
+            geometry = validate_coordinates(segment.coordinates if result else (start, end))
             object_id = str(properties.get("object_id", f"{algorithm_id}-{index:06d}"))
-            writer.line([[list(start), list(end)]])
+            writer.line([geometry.tolist()])
             writer.record(
                 object_id,
                 algorithm_id,
@@ -132,6 +128,8 @@ def export_shapefile(
                 "class_id": properties.get("class_id"),
                 "properties": properties,
                 "source_endpoints": [list(start), list(end)],
+                "source_geometry": geometry.tolist(),
+                "analysis": dict(result.analysis_metadata) if result else {},
             })
         writer.close()
         prj = temporary_shp.with_suffix(".prj")
@@ -141,6 +139,7 @@ def export_shapefile(
             json.dumps(
                 {
                     "source_crs_wkt": dem.crs.to_wkt(),
+                    "dem": str(dem.path),
                     "source_transform": [float(value) for value in tuple(dem.transform)[:6]],
                     "source_shape": list(dem.values.shape),
                     "features": metadata_records,

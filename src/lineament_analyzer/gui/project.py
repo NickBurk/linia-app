@@ -12,6 +12,7 @@ def _result_to_dict(result):
     return {
         "algorithm_id": result.algorithm_id,
         "parameters": dict(result.parameters),
+        "analysis_metadata": dict(result.analysis_metadata),
         "source_crs_wkt": result.source_crs_wkt,
         "source_transform": list(result.source_transform),
         "source_shape": list(result.source_shape),
@@ -59,6 +60,7 @@ def _result_from_dict(data):
     return DetectionResult(
         algorithm_id=data["algorithm_id"],
         parameters=data["parameters"],
+        analysis_metadata=data.get("analysis_metadata", {}),
         source_crs_wkt=data["source_crs_wkt"],
         source_transform=tuple(data["source_transform"]),
         source_shape=tuple(data["source_shape"]),

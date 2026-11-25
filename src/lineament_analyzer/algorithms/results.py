@@ -62,6 +62,8 @@ class DetectionResult:
         default_factory=lambda: MappingProxyType({})
     )
 
+    analysis_metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
     def as_pixel_array(self) -> np.ndarray:
         """Return the legacy-compatible Nx4 pixel endpoint representation."""
         return np.asarray(
