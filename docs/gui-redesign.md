@@ -22,5 +22,6 @@ valid elevation range; band count and explicit NoData metadata are not yet displ
 The layer list contains the active DEM/terrain view and available detector result entries.
 It is not yet a full GIS layer manager: per-layer checkboxes, context actions, cursor
 coordinates and a numeric scale readout remain future improvements. Help text is currently
-brief, and some dialog titles are still fixed strings. Validation status is recorded in
-`dem-loading-fix.md` after CI completes.
+brief, and some dialog titles are still fixed strings. Linux and Windows jobs passed,
+including the frozen Windows self-test; links and the artifact are recorded in
+[`dem-loading-fix.md`](dem-loading-fix.md).
