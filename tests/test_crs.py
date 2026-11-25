@@ -25,6 +25,9 @@ def plane(transform, crs, unit="m", factor=1):
 )
 def test_rotated_projected_plane(transform):
     dem = plane(transform, 32633)
+    np.testing.assert_allclose(
+        dem.resolution, (np.hypot(transform.a, transform.d), np.hypot(transform.b, transform.e))
+    )
     slope = np.arctan(np.hypot(0.2, 0.1))
     aspect = np.arctan2(-0.2, -0.1)
     np.testing.assert_allclose(derivative(dem, "slope"), np.degrees(slope))

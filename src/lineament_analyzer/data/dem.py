@@ -21,7 +21,10 @@ class Dem:
 
     @property
     def resolution(self) -> tuple[float, float]:
-        return abs(self.transform.a), abs(self.transform.e)
+        return (
+            float(np.hypot(self.transform.a, self.transform.d)),
+            float(np.hypot(self.transform.b, self.transform.e)),
+        )
 
 
 def load_dem(path: str | Path) -> Dem:
