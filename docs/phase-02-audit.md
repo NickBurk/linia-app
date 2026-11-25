@@ -29,7 +29,7 @@ A source-resolution geographic DEM of 4096×4096 was generated and processed usi
 
 ## GitHub verification
 
-The inherited run `45691861915` completed with a successful Windows packaging job and failed Linux tests. That result belongs to the baseline commit. CLI `gh auth status` reported an invalid GH_TOKEN. The connected GitHub plugin successfully read Actions run and job metadata, providing an authenticated alternative for checking results. Current audit workflow verification is recorded after pushing the implementation.
+The inherited run `45691861915` completed with a successful Windows packaging job and failed Linux tests. That result belongs to the baseline commit. CLI `gh auth status` reported an invalid GH_TOKEN. The connected GitHub plugin successfully read Actions run and job metadata, providing an authenticated alternative for checking results. Audit run `45695765949` exposed missing `libEGL.so.1` on ubuntu-latest during PySide6 import. The Linux job now installs libegl1 and libopengl0 before running GUI tests. Final workflow verification follows this CI repair.
 
 ## Changed files
 
