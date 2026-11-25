@@ -10,6 +10,9 @@ from lineament_analyzer.gui.window import MainWindow
 def main() -> int:
     """Start the Qt event loop."""
     app = QApplication(sys.argv)
+    if "--self-test" in sys.argv:
+        from lineament_analyzer.selftest import run
+        return run()
     window = MainWindow()
     window.show()
     return app.exec()

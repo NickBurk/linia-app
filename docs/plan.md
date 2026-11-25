@@ -13,3 +13,7 @@
 11. Add a thin QGIS adapter around the Qt-independent core.
 
 Acceptance requires meaningful numerical, geospatial and GUI tests at each stage. Large rasters should use overview or windowed display and tiled processing in later stages.
+
+## PHASE 02 audit
+
+The current audit covers CRS and units, conservative NoData support, windowed terrain processing, LSD/GeoJSON geometry and asynchronous GUI execution. Large DEM terrain processing now uses source-resolution windows and bounded previews. See [phase-02-audit.md](phase-02-audit.md) for verification and remaining limits. PHASE 03 algorithms have not been started.

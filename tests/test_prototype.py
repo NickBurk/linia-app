@@ -17,12 +17,17 @@ def test_dem_derivatives_and_lsd(tmp_path):
     with rasterio.open(path, "w", driver="GTiff", width=80, height=80, count=1,
                        dtype="float32", crs="EPSG:32633", transform=from_origin(0, 800, 10, 10)) as dst:
         dst.write(values, 1)
+        dst.set_band_unit(1, "m")
     dem = load_dem(path)
     assert str(dem.crs) == "EPSG:32633"
     for kind in ("hillshade", "slope", "aspect", "tpi"):
         result = derivative(dem, kind)
         assert result.shape == values.shape
-        assert np.isfinite(result).all()
+        if kind == "tpi":
+            assert np.isfinite(result[4:-4, 4:-4]).all()
+            assert np.isnan(result[:4]).all()
+        else:
+            assert np.isfinite(result).all()
     lines = detect(values, dem.valid, LsdParameters(min_length=15))
     assert len(lines) > 0
     assert np.isfinite(lines).all()
