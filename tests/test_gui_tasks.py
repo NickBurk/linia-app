@@ -4,10 +4,11 @@ from threading import Event
 import numpy as np
 import pytest
 import rasterio
-from PySide6.QtCore import QThread, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtWidgets import QApplication
 from rasterio.transform import from_origin
 
+from lineament_analyzer.algorithms.results import build_detection_result
 from lineament_analyzer.core.windowed import check_cancel
 from lineament_analyzer.gui.window import MainWindow
 
@@ -176,4 +177,47 @@ def test_gui_runs_and_compares_canny_hough_and_edlines(app, tmp_path):
     window.language_box.setCurrentIndex(1)
     assert window.algorithm_box.currentData() == "edlines"
     assert window.result_view_box.itemText(0) == "All algorithms"
+    window.close()
+
+
+def test_gui_postprocessing_runs_in_worker_and_toggles_class_groups(app, tmp_path):
+    path = tmp_path / "postprocess-dem.tif"
+    image = np.zeros((120, 120), dtype=np.float32)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=120,
+        width=120,
+        count=1,
+        dtype="float32",
+        crs="EPSG:32633",
+        transform=from_origin(500000, 4500000, 10, 10),
+    ) as dst:
+        dst.write(image, 1)
+    window = MainWindow()
+    window.load_path(path)
+    wait_for(app, lambda: window.task is None)
+    raw = build_detection_result(
+        window.dem,
+        [[10, 15, 45, 15], [70, 10, 70, 50]],
+        algorithm_id="lsd",
+        parameters={"min_length": 5},
+    )
+    window.accept_detection(raw)
+    window.run_postprocessing()
+    assert window.task is not None
+    wait_for(app, lambda: window.task is None)
+    processed = window.postprocessed_results_by_algorithm["lsd"]
+    assert len(processed.segments) == 2
+    assert "object_count" not in window.statistics_label.text()
+    assert "Объекты: 2" in window.statistics_label.text()
+    assert window.class_group_list.count() >= 2
+    assert len(window.scene.items()) >= 3
+
+    first = window.class_group_list.item(0)
+    first.setCheckState(Qt.CheckState.Unchecked)
+    assert len(window.scene.items()) >= 2
+    window.language_box.setCurrentIndex(1)
+    assert "Objects: 2" in window.statistics_label.text()
     window.close()

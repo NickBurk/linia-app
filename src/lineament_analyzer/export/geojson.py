@@ -108,6 +108,11 @@ def export_geojson(
                 "properties": {
                     "method": method,
                     "algorithm_id": algorithm_id,
+                    "source_algorithm": algorithm_id,
+                    "object_id": str(
+                        detector_properties.get("object_id", f"{algorithm_id}-{index + 1:06d}")
+                    ),
+                    "class_id": detector_properties.get("class_id"),
                     "length_px": length_px,
                     "length_m": length,
                     "azimuth_deg": azimuth,
@@ -116,6 +121,10 @@ def export_geojson(
                     "pixel_endpoints": [float(x1), float(y1), float(x2), float(y2)],
                     "source_endpoints": [list(first), list(second)],
                     "parameters": params,
+                    "detection_parameters": params,
+                    "postprocessing_parameters": dict(result.postprocessing_parameters)
+                    if records is not None
+                    else {},
                     "detection_properties": detector_properties,
                 },
                 "geometry": {"type": "LineString", "coordinates": coordinates.tolist()},

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
@@ -48,6 +48,9 @@ class DetectionResult:
     source_transform: tuple[float, float, float, float, float, float]
     source_shape: tuple[int, int]
     segments: tuple[LineSegment, ...]
+    postprocessing_parameters: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def as_pixel_array(self) -> np.ndarray:
         """Return the legacy-compatible Nx4 pixel endpoint representation."""

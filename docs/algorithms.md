@@ -37,3 +37,33 @@ New detectors such as A*, RANSAC, shearlet, wavelet, Log-Gabor and directional
 filters should implement the shared `LineDetector` contract and keep their
 parameters in their own modules. They remain unavailable until implemented and
 tested.
+
+## Postprocessing
+
+The Qt-independent `algorithms.postprocessing` module accepts any
+`DetectionResult`. Its `PostprocessParameters` independently configures merge
+angle, endpoint distance, collinearity tolerance, along-line maximum gap,
+crossing preservation, minimum/maximum preview-pixel length, optional axial
+orientation limits, optional minimum confidence, duplicate tolerance,
+direction-bin count, length-class thresholds and density-cluster radius.
+Preview-pixel distance thresholds are deliberate: they work without a CRS and
+match the pixel-coordinate geometry used by the bounded detector preview.
+
+Merging is conservative: only near-collinear segment endpoints can connect;
+proper interior crossings remain separate by default. When a merge combines
+segments with defined confidence scores, their mean score is retained. Missing
+scores remain missing and are not treated as zero by confidence filtering.
+Classification records direction, length, orientation-derived geometry and
+centroid-density cluster labels on each feature. `class_id` combines these
+categories for coloring and per-class summaries.
+
+`statistics.summarize_results` bins axial orientation in `[0, 180)` and reports
+length distribution, direction counts, object count, known metric-length
+summary, footprint density per square kilometre when CRS metadata allows it,
+and class counts. When any segment has unknown metric length, the total metric
+length is `null` instead of silently summing only a subset.
+
+GeoJSON export retains source and postprocessing parameters, class and object
+IDs, source/pixel endpoints and geometry metrics. Shapefile output keeps
+geometry in the source CRS and writes `.prj`/`.cpg` files for QGIS plus a
+`.metadata.json` companion with complete attributes and parameter objects.

@@ -16,4 +16,17 @@ Acceptance requires meaningful numerical, geospatial and GUI tests at each stage
 
 ## PHASE 02 audit
 
-The current audit covers CRS and units, conservative NoData support, windowed terrain processing, LSD/GeoJSON geometry and asynchronous GUI execution. Large DEM terrain processing now uses source-resolution windows and bounded previews. See [phase-02-audit.md](phase-02-audit.md) for verification and remaining limits. PHASE 03 algorithms have not been started.
+The PHASE 02 audit covers CRS and units, conservative NoData support, windowed terrain processing, LSD/GeoJSON geometry and asynchronous GUI execution. Large DEM terrain processing now uses source-resolution windows and bounded previews. See [phase-02-audit.md](phase-02-audit.md) for verification and remaining limits. PHASE 03 detectors are implemented and validated on `feature/phase-03-lineament-algorithms`.
+
+## PHASE 04 — postprocessing (active)
+
+Working branch: `feature/phase-04-postprocessing`, based on `575e8cf` from `feature/phase-03-lineament-algorithms`. Keep `main` and the previous feature branches unchanged.
+
+1. Audit the shared result models, affine/CRS conversions, detectors and exports.
+2. Add Qt-independent segment merging, filters, duplicate removal, classification and axial statistics.
+3. Add a localized GUI panel with cancellable background processing and per-class visibility.
+4. Export provenance and derived attributes to GeoJSON and source-CRS Shapefile.
+5. Add synthetic numeric/geospatial/NoData tests, documentation and report.
+6. Complete Python 3.11 pytest/Ruff, Linux and Windows CI, PyInstaller, Windows frozen EXE self-test and ZIP artifact publication.
+
+PHASE 05 must not begin until every PHASE 04 check has a recorded successful result or a clearly documented blocker. See [phase-04-report.md](phase-04-report.md) for the current implementation and validation record.

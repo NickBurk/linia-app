@@ -1,12 +1,13 @@
 """Main Qt window for georeferenced line detection and comparison."""
 
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,8 +17,11 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -34,10 +38,16 @@ from lineament_analyzer.algorithms.canny_hough import (
 )
 from lineament_analyzer.algorithms.edlines import EdLinesDetector, EdLinesParameters
 from lineament_analyzer.algorithms.lsd import LsdDetector, LsdParameters
+from lineament_analyzer.algorithms.postprocessing import (
+    PostprocessParameters,
+    postprocess_result,
+    summarize_results,
+)
 from lineament_analyzer.algorithms.results import DetectionResult
 from lineament_analyzer.core.windowed import check_cancel, process_dem
 from lineament_analyzer.data.dem import Dem, load_preview
 from lineament_analyzer.export.geojson import export_geojson
+from lineament_analyzer.export.shapefile import export_shapefile
 from lineament_analyzer.gui.tasks import Task
 
 TEXT = {
@@ -50,6 +60,25 @@ TEXT = {
         "results": "Сравнение результатов",
         "all_results": "Все алгоритмы",
         "export": "Экспорт GeoJSON",
+        "postprocess": "Постобработка",
+        "run_postprocess": "Обработать результаты",
+        "merge": "Объединять сегменты",
+        "angle": "Угловое отклонение (°)",
+        "endpoint_distance": "Расстояние концов (px)",
+        "collinearity": "Допуск коллинеарности (px)",
+        "maximum_gap": "Максимальный разрыв (px)",
+        "minimum_length_filter": "Мин. длина (px)",
+        "maximum_length_filter": "Макс. длина (px; 0 = без лимита)",
+        "minimum_confidence": "Мин. confidence (не задан = выкл.)",
+        "orientation_min": "Мин. осевой азимут (°; -1 = выкл.)",
+        "orientation_max": "Макс. осевой азимут (°; -1 = выкл.)",
+        "statistics": "Статистика линеаментов",
+        "class_groups": "Группы классов (цвет/видимость)",
+        "stat_count": "Объекты",
+        "stat_total_length": "Суммарная длина",
+        "stat_density": "Плотность / км²",
+        "stat_rose": "Роза азимутов 0–180°",
+        "stat_classes": "Классы",
         "language": "Язык",
         "length": "Минимальная длина (пиксели предпросмотра)",
         "canny_low": "Порог Canny: нижний",
@@ -85,6 +114,25 @@ TEXT = {
         "results": "Compare results",
         "all_results": "All algorithms",
         "export": "Export GeoJSON",
+        "postprocess": "Postprocessing",
+        "run_postprocess": "Process results",
+        "merge": "Merge segments",
+        "angle": "Angular tolerance (°)",
+        "endpoint_distance": "Endpoint distance (px)",
+        "collinearity": "Collinearity tolerance (px)",
+        "maximum_gap": "Maximum gap (px)",
+        "minimum_length_filter": "Minimum length (px)",
+        "maximum_length_filter": "Maximum length (px; 0 = unlimited)",
+        "minimum_confidence": "Minimum confidence (unset = off)",
+        "orientation_min": "Minimum axial azimuth (°; -1 = off)",
+        "orientation_max": "Maximum axial azimuth (°; -1 = off)",
+        "statistics": "Lineament statistics",
+        "class_groups": "Class groups (color/visibility)",
+        "stat_count": "Objects",
+        "stat_total_length": "Total length",
+        "stat_density": "Density / km²",
+        "stat_rose": "Axial azimuth rose 0–180°",
+        "stat_classes": "Classes",
         "language": "Language",
         "length": "Minimum length (preview pixels)",
         "canny_low": "Canny low threshold",
@@ -135,6 +183,9 @@ class MainWindow(QMainWindow):
         self.image: np.ndarray | None = None
         self.segments = np.empty((0, 4), dtype=float)
         self.results_by_algorithm: dict[str, DetectionResult] = {}
+        self.postprocessed_results_by_algorithm: dict[str, DetectionResult] = {}
+        self.class_visibility: dict[str, bool] = {}
+        self.last_statistics = None
         self.language = "ru"
         self.scene = QGraphicsScene(self)
         self.view = QGraphicsView(self.scene)
@@ -155,6 +206,10 @@ class MainWindow(QMainWindow):
         self.result_view_box.currentIndexChanged.connect(self.draw_result_overlays)
         self.export_button = QPushButton()
         self.export_button.clicked.connect(self.save_geojson)
+        self.export_format = QComboBox()
+        self.export_format.addItems(["GeoJSON", "Shapefile"])
+        self.postprocess_button = QPushButton()
+        self.postprocess_button.clicked.connect(self.run_postprocessing)
         self.language_label = QLabel()
         self.language_box = QComboBox()
         self.language_box.addItems(["Русский", "English"])
@@ -170,7 +225,9 @@ class MainWindow(QMainWindow):
             self.detect_button,
             self.result_label,
             self.result_view_box,
+            self.export_format,
             self.export_button,
+            self.postprocess_button,
             self.language_label,
             self.language_box,
         ):
@@ -180,6 +237,46 @@ class MainWindow(QMainWindow):
         self._build_lsd_parameters()
         self._build_canny_parameters()
         self._build_edlines_parameters()
+
+        self.postprocess_group = QGroupBox()
+        post_form = QFormLayout(self.postprocess_group)
+        self.merge_enabled = QCheckBox()
+        self.merge_enabled.setChecked(True)
+        self.post_angle = self._spin(0, 90, 12, decimals=1)
+        self.post_endpoint = self._spin(0, 10000, 15, decimals=1)
+        self.post_collinearity = self._spin(0, 10000, 4, decimals=1)
+        self.post_gap = self._spin(0, 10000, 12, decimals=1)
+        self.post_min_length = self._spin(0, 100000, 0, decimals=1)
+        self.post_max_length = self._spin(0, 100000, 0, decimals=1)
+        self.post_confidence = self._spin(0, 1, 0.5, decimals=3)
+        self.post_confidence_enabled = QCheckBox()
+        self.post_orientation_min = self._spin(-1, 179.9, -1, decimals=1)
+        self.post_orientation_max = self._spin(-1, 179.9, -1, decimals=1)
+        self.post_labels = {key: QLabel() for key in (
+            "merge", "angle", "endpoint_distance", "collinearity", "maximum_gap",
+            "minimum_length_filter", "maximum_length_filter", "minimum_confidence",
+            "orientation_min", "orientation_max",
+        )}
+        post_form.addRow(self.post_labels["merge"], self.merge_enabled)
+        for key, control in (
+            ("angle", self.post_angle),
+            ("endpoint_distance", self.post_endpoint),
+            ("collinearity", self.post_collinearity),
+            ("maximum_gap", self.post_gap),
+            ("minimum_length_filter", self.post_min_length),
+            ("maximum_length_filter", self.post_max_length),
+            ("minimum_confidence", self.post_confidence),
+            ("", self.post_confidence_enabled),
+            ("orientation_min", self.post_orientation_min),
+            ("orientation_max", self.post_orientation_max),
+        ):
+            post_form.addRow(self.post_labels[key] if key else QLabel(), control)
+        self.class_label = QLabel()
+        self.class_group_list = QListWidget()
+        self.class_group_list.setMaximumHeight(100)
+        self.class_group_list.itemChanged.connect(self.class_visibility_changed)
+        self.statistics_label = QLabel()
+        self.statistics_label.setWordWrap(True)
 
         self.unit_box = QComboBox()
         self.unit_box.addItems(["Auto", "m", "ft", "us survey foot", "cm", "mm"])
@@ -211,6 +308,10 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addLayout(controls)
         layout.addWidget(self.parameter_stack)
+        layout.addWidget(self.postprocess_group)
+        layout.addWidget(self.class_label)
+        layout.addWidget(self.class_group_list)
+        layout.addWidget(self.statistics_label)
         layout.addLayout(processing)
         layout.addWidget(self.view)
         container = QWidget()
@@ -330,6 +431,12 @@ class MainWindow(QMainWindow):
         self.detect_button.setText(labels["run"])
         self.result_label.setText(labels["results"])
         self.export_button.setText(labels["export"])
+        self.postprocess_group.setTitle(labels["postprocess"])
+        self.postprocess_button.setText(labels["run_postprocess"])
+        self.class_label.setText(labels["class_groups"])
+        for key, label in self.post_labels.items():
+            label.setText(labels[key])
+        self.post_confidence_enabled.setText("Применять" if index == 0 else "Apply")
         self.language_label.setText(labels["language"])
         self.length_label.setText(labels["length"])
         self.unit_label.setText(labels["units"])
@@ -362,6 +469,8 @@ class MainWindow(QMainWindow):
         for key, label in self.ed_labels.items():
             label.setText(labels[key])
         self.refresh_result_choices()
+        if self.last_statistics is not None:
+            self._display_statistics(self.last_statistics)
         self.algorithm_changed(self.algorithm_box.currentIndex())
 
     def algorithm_changed(self, index):
@@ -375,6 +484,11 @@ class MainWindow(QMainWindow):
         for algorithm_id, result in self.results_by_algorithm.items():
             self.result_view_box.addItem(
                 f"{ALGORITHM_NAMES[algorithm_id]} ({len(result.segments)})", algorithm_id
+            )
+        for algorithm_id, result in self.postprocessed_results_by_algorithm.items():
+            self.result_view_box.addItem(
+                f"{ALGORITHM_NAMES.get(algorithm_id, algorithm_id)} · post ({len(result.segments)})",
+                f"post:{algorithm_id}",
             )
         index = self.result_view_box.findData(previous)
         self.result_view_box.setCurrentIndex(max(index, 0))
@@ -393,6 +507,10 @@ class MainWindow(QMainWindow):
             self.unit_box,
             self.z_factor,
             self.apply_button,
+            self.export_format,
+            self.postprocess_button,
+            self.postprocess_group,
+            self.class_group_list,
         ):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
@@ -506,6 +624,9 @@ class MainWindow(QMainWindow):
         path, kind, parameters, preview, image, gray = result
         if path != self.source:
             self.results_by_algorithm.clear()
+            self.postprocessed_results_by_algorithm.clear()
+            self.statistics_label.clear()
+            self.last_statistics = None
             self.segments = np.empty((0, 4), dtype=float)
         self.dem, self.image = preview, image
         self.source = path
@@ -595,38 +716,150 @@ class MainWindow(QMainWindow):
             if not isinstance(item, QGraphicsPixmapItem):
                 self.scene.removeItem(item)
         selected = self.result_view_box.currentData() if self.result_view_box.count() else "all"
-        algorithm_ids = (
-            list(self.results_by_algorithm)
-            if selected == "all"
-            else [selected]
-            if selected in self.results_by_algorithm
-            else []
-        )
-        for algorithm_id in algorithm_ids:
-            path = QPainterPath()
-            for segment in self.results_by_algorithm[algorithm_id].segments:
+        if selected == "all":
+            overlays = [(key, value, False) for key, value in self.results_by_algorithm.items()]
+        elif isinstance(selected, str) and selected.startswith("post:"):
+            algorithm_id = selected[5:]
+            value = self.postprocessed_results_by_algorithm.get(algorithm_id)
+            overlays = [(algorithm_id, value, True)] if value is not None else []
+        else:
+            value = self.results_by_algorithm.get(selected)
+            overlays = [(selected, value, False)] if value is not None else []
+        for algorithm_id, result, is_postprocessed in overlays:
+            paths = {}
+            colors = {}
+            for segment in result.segments:
+                if is_postprocessed:
+                    class_id = str(segment.properties.get("class_id", "unclassified"))
+                    if not self.class_visibility.get(class_id, True):
+                        continue
+                    hue = int.from_bytes(hashlib.sha256(class_id.encode("utf-8")).digest()[:2], "big") % 360
+                    color = QColor.fromHsv(hue, 220, 230)
+                else:
+                    class_id = algorithm_id
+                    color = QColor(ALGORITHM_COLORS[algorithm_id])
+                path = paths.setdefault(class_id, QPainterPath())
+                colors[class_id] = color
                 x1, y1 = segment.pixel_start
                 x2, y2 = segment.pixel_end
                 path.moveTo(x1 + 0.5, y1 + 0.5)
                 path.lineTo(x2 + 0.5, y2 + 0.5)
-            pen = QPen(ALGORITHM_COLORS[algorithm_id])
-            pen.setCosmetic(True)
-            self.scene.addPath(path, pen)
+            for group_id, path in paths.items():
+                pen = QPen(colors[group_id])
+                pen.setCosmetic(True)
+                self.scene.addPath(path, pen)
+
+    def _postprocess_parameters(self):
+        return PostprocessParameters(
+            merge_enabled=self.merge_enabled.isChecked(),
+            max_angle_difference_deg=self.post_angle.value(),
+            max_endpoint_distance_px=self.post_endpoint.value(),
+            max_collinearity_distance_px=self.post_collinearity.value(),
+            max_gap_px=self.post_gap.value(),
+            minimum_length_px=self.post_min_length.value(),
+            maximum_length_px=self.post_max_length.value() or None,
+            minimum_confidence=self.post_confidence.value()
+            if self.post_confidence_enabled.isChecked()
+            else None,
+            minimum_orientation_deg=self.post_orientation_min.value()
+            if self.post_orientation_min.value() >= 0
+            else None,
+            maximum_orientation_deg=self.post_orientation_max.value()
+            if self.post_orientation_max.value() >= 0
+            else None,
+        )
+
+    def run_postprocessing(self):
+        algorithm_id = self.algorithm_box.currentData()
+        source = self.results_by_algorithm.get(algorithm_id)
+        if source is None:
+            selected = self.result_view_box.currentData()
+            if isinstance(selected, str) and selected.startswith("post:"):
+                source = self.postprocessed_results_by_algorithm.get(selected[5:])
+        if source is None:
+            return
+        parameters = self._postprocess_parameters()
+
+        def operation(progress, cancel):
+            processed = postprocess_result(source, parameters, cancel=cancel)
+            stats = summarize_results(processed)
+            progress(100)
+            return processed, stats
+
+        self.start_task(operation, self.accept_postprocessing)
+
+    def accept_postprocessing(self, response):
+        if self.closing:
+            return
+        result, stats = response
+        self.last_statistics = stats
+        self.postprocessed_results_by_algorithm[result.algorithm_id] = result
+        self.class_visibility = {
+            str(segment.properties.get("class_id", "unclassified")): self.class_visibility.get(
+                str(segment.properties.get("class_id", "unclassified")), True
+            )
+            for segment in result.segments
+        }
+        self._refresh_class_groups(result)
+        self._display_statistics(stats)
+        self.refresh_result_choices()
+        index = self.result_view_box.findData(f"post:{result.algorithm_id}")
+        if index >= 0:
+            self.result_view_box.setCurrentIndex(index)
+
+    def _display_statistics(self, stats):
+        labels = TEXT[self.language]
+        self.statistics_label.setText(
+            f"{labels['stat_count']}: {stats['object_count']}  "
+            f"{labels['stat_total_length']}: {stats['total_length_m']} m  "
+            f"{labels['stat_density']}: {stats['density_per_km2']}\n"
+            f"{labels['stat_rose']}: {stats['rose_counts']}\n"
+            f"{labels['stat_classes']}: {stats['class_statistics']}"
+        )
+
+    def _refresh_class_groups(self, result):
+        classes = sorted({
+            str(segment.properties.get("class_id", "unclassified"))
+            for segment in result.segments
+        })
+        self.class_group_list.blockSignals(True)
+        self.class_group_list.clear()
+        for class_id in classes:
+            hue = int.from_bytes(hashlib.sha256(class_id.encode("utf-8")).digest()[:2], "big") % 360
+            item = QListWidgetItem(class_id)
+            item.setForeground(QColor.fromHsv(hue, 220, 230))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if self.class_visibility.get(class_id, True)
+                else Qt.CheckState.Unchecked
+            )
+            self.class_group_list.addItem(item)
+        self.class_group_list.blockSignals(False)
+
+    def class_visibility_changed(self, item):
+        self.class_visibility[item.text()] = item.checkState() == Qt.CheckState.Checked
+        self.draw_result_overlays()
 
     def save_geojson(self):
-        if self.dem is None or not self.results_by_algorithm:
+        if self.dem is None or not (self.results_by_algorithm or self.postprocessed_results_by_algorithm):
             return
-        path, _ = QFileDialog.getSaveFileName(self, "GeoJSON", "", "GeoJSON (*.geojson)")
+        is_shapefile = self.export_format.currentText() == "Shapefile"
+        title = "Shapefile" if is_shapefile else "GeoJSON"
+        file_filter = "Shapefile (*.shp)" if is_shapefile else "GeoJSON (*.geojson)"
+        path, _ = QFileDialog.getSaveFileName(self, title, "", file_filter)
         if path:
             selected = self.result_view_box.currentData()
             results = (
-                list(self.results_by_algorithm.values())
+                list(self.results_by_algorithm.values()) + list(self.postprocessed_results_by_algorithm.values())
                 if selected == "all"
+                else [self.postprocessed_results_by_algorithm[selected[5:]]]
+                if isinstance(selected, str) and selected.startswith("post:")
                 else [self.results_by_algorithm[selected]]
             )
             dem = self.dem
+            exporter = export_shapefile if is_shapefile else export_geojson
             self.start_task(
-                lambda progress, cancel: export_geojson(path, dem, results),
+                lambda progress, cancel: exporter(path, dem, results),
                 self.export_finished,
             )
 
