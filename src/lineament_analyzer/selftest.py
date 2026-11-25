@@ -1,12 +1,14 @@
 """Installed and frozen application smoke test, including GDAL/PROJ and Qt plugins."""
 
 import json
+import time
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
 import rasterio
+from PySide6.QtWidgets import QApplication
 from rasterio.transform import from_origin
 
 from lineament_analyzer.algorithms.canny_hough import (
@@ -65,5 +67,25 @@ def run():
         assert len(json.loads(target.read_text())["features"]) == len(lines)
         window = MainWindow()
         window.show()
+        for candidate in (source, source):
+            assert window.load_path(candidate)
+            deadline = time.monotonic() + 15
+            while window.task is not None and time.monotonic() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.002)
+            assert window.task is None and window.source == str(source.resolve())
+        second = root / "dem-second.tif"
+        with rasterio.open(
+            second, "w", driver="GTiff", width=80, height=80, count=1,
+            dtype="float64", crs="EPSG:32633",
+            transform=from_origin(501000, 5000000, 10, 10),
+        ) as dst:
+            dst.write(z + 5, 1)
+        assert window.load_path(second)
+        deadline = time.monotonic() + 15
+        while window.task is not None and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.002)
+        assert window.task is None and window.source == str(second.resolve())
         window.close()
     return 0

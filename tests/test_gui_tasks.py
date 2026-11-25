@@ -4,17 +4,23 @@ from threading import Event
 import numpy as np
 import pytest
 import rasterio
-from PySide6.QtCore import Qt, QThread, QTimer
+from PySide6.QtCore import QSettings, Qt, QThread, QTimer
 from PySide6.QtWidgets import QApplication
 from rasterio.transform import from_origin
 
 from lineament_analyzer.algorithms.results import build_detection_result
 from lineament_analyzer.core.windowed import check_cancel
+from lineament_analyzer.gui.project import load_project, save_project
 from lineament_analyzer.gui.window import MainWindow
 
 
 @pytest.fixture
-def app():
+def app(tmp_path):
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
+    settings = QSettings("NickBurk", "LineamentAnalyzer")
+    settings.clear()
+    settings.sync()
     return QApplication.instance() or QApplication([])
 
 
@@ -221,3 +227,98 @@ def test_gui_postprocessing_runs_in_worker_and_toggles_class_groups(app, tmp_pat
     window.language_box.setCurrentIndex(1)
     assert "Objects: 2" in window.statistics_label.text()
     window.close()
+
+
+def write_dem(path, offset=0):
+    values = np.arange(64, dtype=np.float32).reshape(8, 8) + offset
+    with rasterio.open(
+        path, "w", driver="GTiff", height=8, width=8, count=1,
+        dtype="float32", crs="EPSG:32633", transform=from_origin(500000, 4500000, 5, 5),
+    ) as dataset:
+        dataset.write(values, 1)
+    return values
+
+
+def test_sequential_dem_load_is_transactional_and_repeatable(app, tmp_path, monkeypatch):
+    first, second, corrupt = (tmp_path / name for name in ("first.tif", "second.tif", "broken.tif"))
+    write_dem(first)
+    write_dem(second, 100)
+    corrupt.write_bytes(b"not a geotiff")
+    window = MainWindow()
+    errors = []
+    monkeypatch.setattr(window, "show_error", errors.append)
+
+    for source in (first, first):
+        assert window.load_path(source)
+        wait_for(app, lambda: window.task is None)
+        assert window.source == str(source.resolve())
+        assert window.dem.values.shape == (8, 8)
+
+    result = build_detection_result(window.dem, [[0, 0, 7, 7]], algorithm_id="lsd", parameters={})
+    window.accept_detection(result)
+    assert window.load_path(second)
+    wait_for(app, lambda: window.task is None)
+    assert window.source == str(second.resolve())
+    assert not window.results_by_algorithm
+
+    before = window.dem
+    assert window.load_path(corrupt)
+    wait_for(app, lambda: window.task is None)
+    assert window.dem is before
+    assert window.source == str(second.resolve())
+    assert errors
+    assert window.load_path(second)
+    wait_for(app, lambda: window.task is None)
+    window.close()
+
+
+def test_project_round_trip_and_gui_language_docks(app, tmp_path):
+    path = tmp_path / "project-dem.tif"
+    write_dem(path)
+    window = MainWindow()
+    window.load_path(path)
+    wait_for(app, lambda: window.task is None)
+    result = build_detection_result(window.dem, [[0, 0, 7, 7]], algorithm_id="lsd", parameters={"min_length": 1})
+    window.accept_detection(result)
+    project_file = tmp_path / "analysis.laproj"
+    save_project(project_file, {
+        "dem_path": window.source,
+        "detection_results": window.results_by_algorithm,
+        "postprocessed_results": {},
+        "class_visibility": {"example": False},
+        "display": {"algorithm": "lsd", "layer": "elevation"},
+    })
+    restored = load_project(project_file)
+    assert restored["dem_path"] == str(path.resolve())
+    assert restored["detection_results"]["lsd"].segments == result.segments
+    assert restored["class_visibility"] == {"example": False}
+    assert window.property_tabs.count() == 4
+    window.language_box.setCurrentIndex(1)
+    assert window.property_tabs.tabText(0) == "Data"
+    assert window.file_menu.title() == "File"
+    window.language_box.setCurrentIndex(0)
+    assert window.property_tabs.tabText(0) == "Данные"
+    window.close()
+
+
+def test_opt_in_restore_reloads_dem_and_missing_path_is_safe(app, tmp_path):
+    source = tmp_path / "restore.tif"
+    write_dem(source)
+    first = MainWindow()
+    first.load_path(source)
+    wait_for(app, lambda: first.task is None)
+    first.restore_action.setChecked(True)
+    first.close()
+
+    restored = MainWindow()
+    wait_for(app, lambda: restored.task is None)
+    assert restored.source == str(source.resolve())
+    restored.close()
+
+    settings = QSettings("NickBurk", "LineamentAnalyzer")
+    settings.setValue("lastDem", str(tmp_path / "moved-away.tif"))
+    settings.setValue("autoRestore", True)
+    missing = MainWindow()
+    assert missing.dem is None
+    assert "moved-away.tif" in missing.statusBar().currentMessage()
+    missing.close()
