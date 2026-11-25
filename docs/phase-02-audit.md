@@ -11,7 +11,7 @@ The baseline is commit `2c3f93b` on `feature/phase-02-dem-audit` in `NickBurk/li
 | Large DEM | Window reads, halo/crop/write, atomic output, memory estimate and GDAL cache limit | Whole-array equivalence for four derivatives and three tile sizes, explicit bounded-read assertions, preview transform, cancellation and injected partial failure |
 | LSD and GeoJSON | Length filtering, mask-support rejection, sparse-line normalization, pixel-centre transform, EPSG:4326 export and attributes | Horizontal, vertical and diagonal known lines, mask boundary, three source CRSs, finite JSON and preservation on invalid export |
 | GUI | QThread task, progress, cancellation event, queued results and errors, deferred close | Event-loop heartbeat during a blocked worker, GUI-thread receiver assertion, error/cancel tests, close during task, real load/terrain/LSD flow |
-| Windows | Python 3.11 on windows-latest, PyInstaller, Qt plugin check, GDAL/PROJ collection, frozen self-test, ZIP upload | The workflow must complete on the audit commit before the current build can be declared successful |
+| Windows | Python 3.11 on windows-latest, PyInstaller, Qt plugin check, GDAL/PROJ collection, frozen self-test, ZIP upload | Run 45695945398 succeeded on Windows, including the frozen EXE self-test and ZIP upload. Later audit commits run the same checks |
 
 Local verification uses Python 3.11.18. `QT_QPA_PLATFORM=offscreen pytest -q` passed 52 tests. `ruff check .`, import checks, compileall, dependency compatibility checks and the installed application self-test passed. Three warnings in baseline terrain tests exercise inputs with missing units/CRS. Dedicated tests explicitly assert these warnings.
 
@@ -29,7 +29,9 @@ A source-resolution geographic DEM of 4096×4096 was generated and processed usi
 
 ## GitHub verification
 
-The inherited run `45691861915` completed with a successful Windows packaging job and failed Linux tests. That result belongs to the baseline commit. CLI `gh auth status` reported an invalid GH_TOKEN. The connected GitHub plugin successfully read Actions run and job metadata, providing an authenticated alternative for checking results. Audit run `45695765949` exposed missing `libEGL.so.1` on ubuntu-latest during PySide6 import. The Linux job now installs libegl1 and libopengl0 before running GUI tests. Final workflow verification follows this CI repair.
+The inherited run `45691861915` completed with a successful Windows packaging job and failed Linux tests. That result belongs to the baseline commit. CLI `gh auth status` reported an invalid GH_TOKEN. The connected GitHub plugin successfully read Actions run and job metadata, providing an authenticated alternative for checking results. Audit run `45695765949` exposed missing `libEGL.so.1` on ubuntu-latest during PySide6 import. The Linux job now installs libegl1 and libopengl0 before running GUI tests. Run [45695945398](https://github.com/NickBurk/linia-app/actions/runs/45695945398) completed successfully for commit `f5a3453`. Both Linux and Windows jobs passed pytest, Ruff, dependency checks and installed self-test. The Windows job also passed PyInstaller, verified qwindows.dll, ran the frozen self-test and uploaded artifact `15059942988` (179,301,827 bytes).
+
+The subsequent rotated-resolution correction is covered by the synthetic affine test. Run [45696300061](https://github.com/NickBurk/linia-app/actions/runs/45696300061) checks that code revision `4c2875d`. The Actions page records the final run and downloadable artifact for each revision. Ordinary documentation commits can also trigger this workflow.
 
 ## Changed files
 
