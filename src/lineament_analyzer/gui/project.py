@@ -29,6 +29,8 @@ def _result_to_dict(result):
                 "confidence": line.confidence,
                 "algorithm_id": line.algorithm_id,
                 "properties": dict(line.properties),
+                "pixel_path": line.pixel_path,
+                "source_path": line.source_path,
             }
             for line in result.segments
         ],
@@ -49,6 +51,8 @@ def _result_from_dict(data):
             confidence=item["confidence"],
             algorithm_id=item["algorithm_id"],
             properties=item["properties"],
+            pixel_path=tuple(map(tuple, item.get("pixel_path", ()))),
+            source_path=tuple(map(tuple, item.get("source_path", ()))),
         )
         for item in data["segments"]
     )

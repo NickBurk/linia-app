@@ -36,6 +36,16 @@ class LineSegment:
     confidence: float | None
     algorithm_id: str
     properties: Mapping[str, Any]
+    pixel_path: tuple[Point, ...] = ()
+    source_path: tuple[Point, ...] = ()
+
+    @property
+    def pixels(self) -> tuple[Point, ...]:
+        return self.pixel_path or (self.pixel_start, self.pixel_end)
+
+    @property
+    def coordinates(self) -> tuple[Point, ...]:
+        return self.source_path or (self.source_start, self.source_end)
 
 
 @dataclass(frozen=True)
@@ -208,3 +218,42 @@ def build_detection_result(
         source_shape=(int(height), int(width)),
         segments=tuple(result_segments),
     )
+
+
+def build_path_result(dem, paths, *, algorithm_id, parameters, confidences=None, properties=None):
+    """Construct polyline candidates with geodesic length summed over the vertices."""
+    from dataclasses import replace
+
+    arrays = [np.asarray(path, dtype=float) for path in paths]
+    height, width = dem.values.shape
+    for path in arrays:
+        if (
+            path.ndim != 2 or path.shape[1] != 2 or len(path) < 2
+            or not np.isfinite(path).all()
+            or (path < 0).any() or (path >= (width, height)).any()
+            or np.array_equal(path[0], path[-1])
+            or np.any(np.all(np.diff(path, axis=0) == 0, axis=1))
+        ):
+            raise ValueError("Each path must contain distinct, valid raster pixel vertices")
+    result = build_detection_result(
+        dem, [(*path[0], *path[-1]) for path in arrays],
+        algorithm_id=algorithm_id, parameters=parameters,
+        confidences=confidences, properties=properties,
+    )
+    crs = ProjCRS.from_user_input(dem.crs) if dem.crs else None
+    geod = crs.get_geod() if crs else None
+    lines = []
+    for line, path in zip(result.segments, arrays, strict=True):
+        pixels = tuple((float(x), float(y)) for x, y in path)
+        coordinates = tuple(dem.transform * (x + 0.5, y + 0.5) for x, y in pixels)
+        length_m = None
+        if crs is not None:
+            lon, lat = map(np.asarray, reproject_points(crs, "EPSG:4326", *zip(*coordinates)))
+            if not np.isfinite([lon, lat]).all() or (abs(lat) > 90).any() or (abs(lon) > 180).any():
+                raise ValueError("Invalid geographic path coordinates")
+            length_m = float(geod.line_length(lon, lat))
+        lines.append(replace(
+            line, pixel_path=pixels, source_path=coordinates, length_m=length_m,
+            length_px=float(np.linalg.norm(np.diff(path, axis=0), axis=1).sum()),
+        ))
+    return replace(result, segments=tuple(lines))

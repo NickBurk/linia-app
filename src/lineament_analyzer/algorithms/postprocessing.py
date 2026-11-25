@@ -205,6 +205,11 @@ def merge_segments(
         for pair_number, (first_index, second_index) in enumerate(sorted(candidate_indices)):
             if pair_number % 64 == 0:
                 check_cancel(cancel)
+            if any(
+                result.segments[member].pixel_path
+                for index in (first_index, second_index) for member in source_members[index]
+            ):
+                continue
             merged = _merge_pair(lines[first_index], lines[second_index], parameters)
             if merged is not None:
                 endpoints_a = (lines[first_index][:2], lines[first_index][2:])
@@ -273,7 +278,10 @@ def merge_segments(
     )
     return replace(
         result,
-        segments=built.segments,
+        segments=tuple(
+            result.segments[members[0]] if result.segments[members[0]].pixel_path else segment
+            for segment, members in zip(built.segments, source_members, strict=True)
+        ),
         postprocessing_parameters=MappingProxyType(asdict(parameters)),
     )
 
@@ -301,7 +309,7 @@ def filter_segments(
 ) -> DetectionResult:
     """Filter by length, axial orientation, optional confidence and duplicates."""
     kept: list[LineSegment] = []
-    seen_lines: list[tuple[float, float, float, float]] = []
+    seen_lines: list[LineSegment] = []
     confidence_threshold = parameters.minimum_confidence
     ordered = sorted(
         enumerate(result.segments),
@@ -344,6 +352,15 @@ def filter_segments(
         ):
             continue
         line = _coords(segment)
+        def same_path(old, segment=segment):
+            if not segment.pixel_path and not old.pixel_path:
+                return True
+            first, second = np.asarray(segment.pixels), np.asarray(old.pixels)
+            return first.shape == second.shape and min(
+                np.linalg.norm(first - second, axis=1).max(),
+                np.linalg.norm(first - second[::-1], axis=1).max(),
+            ) <= parameters.duplicate_tolerance_px
+
         duplicate = any(
             (
                 hypot(line[0] - old[0], line[1] - old[1])
@@ -357,11 +374,12 @@ def filter_segments(
                 and hypot(line[2] - old[0], line[3] - old[1])
                 <= parameters.duplicate_tolerance_px
             )
-            for old in seen_lines
+            for prior in seen_lines if same_path(prior)
+            for old in (_coords(prior),)
         )
         if duplicate:
             continue
-        seen_lines.append(line)
+        seen_lines.append(segment)
         kept.append(segment)
     return _make_result(result, tuple(kept), asdict(parameters))
 

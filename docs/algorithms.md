@@ -67,3 +67,25 @@ GeoJSON export retains source and postprocessing parameters, class and object
 IDs, source/pixel endpoints and geometry metrics. Shapefile output keeps
 geometry in the source CRS and writes `.prj`/`.cpg` files for QGIS plus a
 `.metadata.json` companion with complete attributes and parameter objects.
+
+## A*, Segment Tracing and RANSAC
+
+A* and Segment Tracing use a smoothed DEM gradient, its perpendicular tangent and a
+conservative NoData margin. A* searches eight-connected raster cells with heading,
+unsupported-run length and step count as state. Its cost is the step length times
+`1 + 2(1 − strength) + orientation_weight(1 − |cos(heading − tangent)|)` plus the
+squared turn penalty. The Euclidean distance to the endpoint is an admissible heuristic.
+Interactive endpoints must lie on supported pixels. Automatic endpoints come from
+bounded bidirectional tracing. The expansion budget limits time and memory per path.
+
+Segment Tracing is a local greedy search starting at gradient maxima. Its score combines
+strength, tangent alignment and a turn penalty. Visited and occupied pixels, turning
+limits, maximum gap and route length stop the search. Both methods require at least 65%
+per-pixel support and preserve ordered vertices. Their output length is the sum of
+ellipsoidal segment lengths. The endpoint bearing describes the overall axial direction.
+
+RANSAC samples pairs of Canny edge pixels within spatial groups. Inliers fall within
+the perpendicular residual tolerance and the hypothesis extent. The best hypothesis is
+refitted by total least squares, split at large projected gaps and checked against the
+source mask. RMSE is reported in pixels. Its support score is derived from fit residuals.
+The seed, iteration and candidate budgets make the search bounded and reproducible.
