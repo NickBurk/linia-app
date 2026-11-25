@@ -100,3 +100,30 @@ def test_spatially_independent_folds(tmp_path):
     with pytest.raises(ValueError, match="multiple folds"):
         check_splits([a, replace(b, region=a.region)])
     assert np.isfinite(load_dem(a.dem_path).values).any()
+
+
+def test_windowed_native_detection_uses_native_affine(tmp_path):
+    from pathlib import Path
+
+    import rasterio
+    from rasterio.transform import from_origin
+
+    source = tmp_path / "native.tif"
+    values = np.indices((513, 513))[1].astype(np.float32)
+    values[:, 38:41] += 100
+    values[:, 254:257] += 100
+    values[:, 470:473] += 100
+    affine = from_origin(480000, 5200000, 2, 3)
+    with rasterio.open(source, "w", driver="GTiff", width=513, height=513, count=1,
+                       dtype="float32", crs="EPSG:32633", transform=affine) as dst:
+        dst.write(values, 1)
+    result = run_detector(source, "lsd", resolution="full", memory_mib=16)
+    assert result.segments
+    assert result.analysis_metadata["window_px"] is not None
+    assert result.source_shape == (513, 513)
+    assert result.source_transform == tuple(affine)[:6]
+    assert any(line.pixel_start[0] > 450 for line in result.segments)
+    for line in result.segments:
+        x, y = line.pixel_start
+        assert line.source_start == pytest.approx(affine * (x + .5, y + .5))
+    assert Path(result.analysis_metadata["dem"]) == source

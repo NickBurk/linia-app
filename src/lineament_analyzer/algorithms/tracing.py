@@ -163,6 +163,47 @@ def _trace(seed, field, p, occupied, cancel):
     return branches[0][::-1] + [(seed[1], seed[0])] + branches[1]
 
 
+def _join_fragments(paths, field, p, cancel):
+    """Join aligned tips over a short valid gap without introducing a loop."""
+    strength, _, valid = field
+    joined = list(paths)
+    for i, first in enumerate(joined):
+        check_cancel(cancel)
+        if first is None:
+            continue
+        for j in range(i + 1, len(joined)):
+            second = joined[j]
+            if second is None or len(first) + len(second) > p.max_steps + 1:
+                continue
+            for a, b in ((first, second), (first, second[::-1]),
+                         (first[::-1], second), (first[::-1], second[::-1])):
+                tip, origin = np.asarray(a[-1]), np.asarray(b[0])
+                gap = origin - tip
+                distance = np.linalg.norm(gap)
+                if distance == 0 or distance > p.max_gap_px + 1:
+                    continue
+                directions = (tip - a[-min(4, len(a))], np.asarray(b[min(3, len(b)-1)]) - origin)
+                minimum_alignment = cos(p.max_turn_deg * pi / 180)
+                if any(direction @ gap < minimum_alignment * np.linalg.norm(direction) * distance
+                       for direction in directions):
+                    continue
+                steps = int(max(abs(gap)))
+                bridge = [tuple(point) for point in np.rint(
+                    np.linspace(tip, origin, steps + 1)[1:-1]
+                ).astype(int)]
+                if not all(valid[y, x] for x, y in bridge):
+                    continue
+                combined = a + bridge + b
+                if len(combined) > p.max_steps + 1 or len(set(combined)) != len(combined):
+                    continue
+                if np.mean([strength[y, x] >= p.support_threshold for x, y in combined]) < 0.65:
+                    continue
+                first = joined[i] = combined
+                joined[j] = None
+                break
+    return [path for path in joined if path is not None]
+
+
 class SegmentTracingDetector:
     """Greedy tangent-following with bidirectional seeds and bounded gap bridging."""
 
@@ -243,6 +284,13 @@ def _run(dem, p, algorithm_id, progress, cancel, endpoints=None):
         occupied[yc, xc] = True
         if progress:
             progress(min(95, round(100 * len(paths) / p.max_paths)))
+    if algorithm_id == "segment-tracing":
+        paths = _join_fragments(paths, field, p, cancel)
+        confidence = [
+            float(np.mean([strength[y, x] >= p.support_threshold for x, y in path]))
+            for path in paths
+        ]
+        properties = [{"support_fraction": value} for value in confidence]
     check_cancel(cancel)
     result = build_path_result(
         dem, paths, algorithm_id=algorithm_id, parameters=metadata,

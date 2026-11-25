@@ -73,8 +73,9 @@ def evaluate(result, reference=None, parameters=DEFAULT_MATCH, *, cancel=None):
         position_errors.extend(_position_errors(first, second, step))
         position_errors.extend(_position_errors(second, first, step))
     matched_found = {pair.detected for pair in matches}
+    matched_reference = {pair.reference for pair in matches}
     duplicate_indices = {pair.detected for pair in eligible if pair.detected not in matched_found
-                         and pair.reference in {match.reference for match in matches}}
+                         and pair.reference in matched_reference}
     by_ref = defaultdict(set)
     for pair in pairs:
         if pair.detected not in duplicate_indices:
@@ -148,10 +149,10 @@ def compare_results(results, parameters=DEFAULT_MATCH, *, minimum_families=2, ca
         algorithms = sorted({records[i][0] for i in group})
         families = sorted({METHODS[algorithm].family for algorithm in algorithms})
         members = sorted(group)
+        if len(group) == 1:
+            method, index, line = records[members[0]]
+            unique[method].append(line.properties.get("object_id", index))
         if len(families) < minimum_families:
-            for i in members:
-                method, index, line = records[i]
-                unique[method].append(line.properties.get("object_id", index))
             continue
         chosen = max(members, key=lambda i: (
             sum(pairs[tuple(sorted((i, j)))] for j in members if j != i), -i

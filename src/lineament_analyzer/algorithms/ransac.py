@@ -104,6 +104,8 @@ class RansacDetector:
                     if len(chunk) < p.min_inliers:
                         continue
                     start, end = center + along[chunk[[0, -1]], None] * direction
+                    bounds = np.asarray(valid.shape[::-1]) - 1
+                    start, end = np.clip((start, end), 0, bounds)
                     line = np.r_[start, end]
                     if np.linalg.norm(end - start) < 1 or sample_mask_support(safe, line) is None:
                         continue

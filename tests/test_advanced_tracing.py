@@ -67,3 +67,18 @@ def test_postprocessing_keeps_actual_path(ridge):
     processed = postprocess_result(result, PostprocessParameters())
     assert processed.segments
     assert all(line.pixel_path for line in processed.segments)
+
+
+def test_trace_join_respects_mask_and_tip_alignment():
+    from lineament_analyzer.algorithms.tracing import _join_fragments
+
+    response = np.ones((12, 24))
+    valid = response.astype(bool)
+    a = [(x, 6) for x in range(3, 10)]
+    b = [(x, 6) for x in range(12, 20)]
+    p = TraceParameters()
+    field = response, np.zeros_like(response), valid
+    paths = _join_fragments([a, b], field, p, None)
+    assert paths == [[(x, 6) for x in range(3, 20)]]
+    valid[6, 10] = False
+    assert _join_fragments([a, b], field, p, None) == [a, b]

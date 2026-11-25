@@ -308,3 +308,39 @@ class FilterDetector:
         if progress:
             progress(100)
         return result
+
+
+def filter_component(dem, parameters, algorithm, index, *, cancel=None):
+    """Inspect one analysis band, including a wavelet or shearlet residual."""
+    if not 1 <= parameters.levels <= 5 or index < 0:
+        raise ValueError("Invalid filter level count or component index")
+    image, valid = _filled(dem)
+    if algorithm == "directional":
+        components = directional_components(image, parameters, cancel)
+        radius = ceil(4 * parameters.first_scale_px * 2**(parameters.levels - 1))
+    elif algorithm == "wavelet":
+        components = wavelet_components(image, parameters.levels, cancel)
+        radius = 2 * (2**parameters.levels - 1)
+    elif algorithm == "log-gabor":
+        if not 0.03 <= parameters.first_frequency <= 0.45:
+            raise ValueError("Invalid Log-Gabor frequency")
+        radius = ceil(2**(parameters.levels - 1) / parameters.first_frequency)
+    elif algorithm == "shearlet":
+        radius = 2**parameters.levels
+    else:
+        raise ValueError(f"Unknown filter bank: {algorithm}")
+    crop = np.s_[:, :]
+    if algorithm in ("log-gabor", "shearlet"):
+        padding = min(radius, max(image.shape))
+        image = np.pad(image, padding, mode="reflect")
+        crop = np.s_[padding:-padding, padding:-padding]
+        if algorithm == "log-gabor":
+            components = log_gabor_components(image, parameters, cancel)
+        else:
+            components = ((a, c.real) for a, c, _ in shearlet_components(image, parameters.levels, cancel))
+    for current, (angle, band) in enumerate(components):
+        check_cancel(cancel)
+        if current == index:
+            safe = detector_support_mask(valid, radius=radius)
+            return angle, np.where(safe, band[crop], np.nan)
+    raise ValueError(f"Filter component {index + 1} does not exist with these settings")

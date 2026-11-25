@@ -55,6 +55,7 @@ from lineament_analyzer.engine import (
     METHODS,
     PROFILES,
     dataset_grid,
+    detector_component,
     detector_response,
     run_detector,
 )
@@ -262,6 +263,7 @@ class MainWindow(QMainWindow):
         self.results_by_algorithm: dict[str, DetectionResult] = {}
         self.postprocessed_results_by_algorithm: dict[str, DetectionResult] = {}
         self.class_visibility: dict[str, bool] = {}
+        self.unique_candidates = {}
         self.last_statistics = None
         self.language = "ru"
         self.settings = QSettings("NickBurk", "LineamentAnalyzer")
@@ -323,7 +325,7 @@ class MainWindow(QMainWindow):
         self.resolution_mode.addItem("", "preview")
         self.resolution_mode.addItem("", "full")
         self.resolution_label = QLabel()
-        self.memory_budget = self._spin(16, 32768, 512)
+        self.memory_budget = self._spin(16, 32768, 1024)
         self.memory_budget.setSuffix(" MiB")
         self.memory_label = QLabel()
         self.profile_box = QComboBox()
@@ -335,6 +337,9 @@ class MainWindow(QMainWindow):
         self.response_button = QPushButton()
         self.response_button.clicked.connect(self.show_response)
         self.orientation_response = QCheckBox()
+        self.response_band = self._spin(0, 512, 0)
+        self.response_band.setPrefix("№ ")
+        self.response_band_label = QLabel()
         self.astar_manual = QPushButton()
         self.astar_manual.clicked.connect(self.pick_astar_endpoints)
 
@@ -486,6 +491,9 @@ class MainWindow(QMainWindow):
         detect_layout.addWidget(self.detect_button)
         detect_layout.addWidget(self.astar_manual)
         detect_layout.addWidget(self.orientation_response)
+        band_form = QFormLayout()
+        band_form.addRow(self.response_band_label, self.response_band)
+        detect_layout.addLayout(band_form)
         detect_layout.addWidget(self.response_button)
         detect_layout.addStretch(1)
         scroll = QScrollArea()
@@ -827,6 +835,9 @@ class MainWindow(QMainWindow):
         self.astar_manual.setText(("Выбрать две точки A*", "Pick two A* endpoints")[index])
         self.response_button.setText(("Показать отклик", "Show response")[index])
         self.orientation_response.setText(("Цвет по направлению", "Color by direction")[index])
+        label = ("Компонент (0 = сводный)", "Component (0 = aggregate)")[index]
+        self.response_band_label.setText(label)
+        self.response_band.setToolTip(label)
         for (algorithm, key), label in self.advanced_labels.items():
             text = CONTROLS[key][index]
             label.setText(text)
@@ -873,6 +884,9 @@ class MainWindow(QMainWindow):
         self.astar_manual.setVisible(method == "astar")
         self.response_button.setVisible(method in FILTER_METHODS)
         self.orientation_response.setVisible(method in FILTER_METHODS)
+        self.response_band.setVisible(method in FILTER_METHODS)
+        self.response_band_label.setVisible(method in FILTER_METHODS)
+        self.response_band.setValue(0)
         self.view.picking = False
         self.endpoints.clear()
 
@@ -890,6 +904,12 @@ class MainWindow(QMainWindow):
                 f"{ALGORITHM_NAMES.get(algorithm_id, algorithm_id)} · post ({len(result.segments)})",
                 f"post:{algorithm_id}",
             )
+        for algorithm, ids in self.unique_candidates.items():
+            if ids and algorithm in self.results_by_algorithm:
+                title = ("уникальные", "unique")[self.language == "en"]
+                self.result_view_box.addItem(
+                    f"{ALGORITHM_NAMES[algorithm]} · {title} ({len(ids)})", f"unique:{algorithm}"
+                )
         index = self.result_view_box.findData(previous)
         self.result_view_box.setCurrentIndex(max(index, 0))
         self.result_view_box.blockSignals(False)
@@ -912,7 +932,7 @@ class MainWindow(QMainWindow):
             self.postprocess_group,
             self.class_group_list,
             self.validation, self.comparison, self.resolution_mode, self.memory_budget,
-            self.astar_manual, self.response_button, self.orientation_response, self.profile_box,
+            self.astar_manual, self.response_button, self.orientation_response, self.response_band, self.profile_box,
             self.apply_profile_button, self.save_profile_button,
         ):
             widget.setEnabled(not busy)
@@ -992,7 +1012,7 @@ class MainWindow(QMainWindow):
         if path:
             self.load_path(path)
 
-    def load_path(self, path):
+    def load_path(self, path, *, kind='elevation', parameters=None):
         if self.task is not None:
             return False
         path = str(Path(path).expanduser().resolve())
@@ -1000,7 +1020,7 @@ class MainWindow(QMainWindow):
             self.show_error(TEXT[self.language]["missing_dem"].format(path))
             return False
         self.start_task(
-            lambda progress, cancel: self.prepare_layer(path, "elevation", {}, cancel, progress),
+            lambda progress, cancel: self.prepare_layer(path, kind, parameters or {}, cancel, progress),
             self.accept_layer,
         )
         return True
@@ -1014,8 +1034,21 @@ class MainWindow(QMainWindow):
             image = preview.values
             analysis_path = path
         else:
-            target = Path(self.cache.name) / "derivative.tif"
-            process_dem(path, target, kind, progress=progress, cancel=cancel, **parameters)
+            info = Path(path).stat()
+            key = json.dumps([str(path), info.st_size, info.st_mtime_ns, kind, parameters],
+                             sort_keys=True)
+            token = hashlib.sha256(key.encode()).hexdigest()
+            target = Path(self.cache.name) / f"{token}.tif"
+            if not target.exists():
+                process_dem(path, target, kind, progress=progress, cancel=cancel, **parameters)
+                # Bound session cache to three source-resolution derivatives.
+                cached = sorted(Path(self.cache.name).glob("*.tif"),
+                                key=lambda entry: entry.stat().st_mtime_ns)
+                for stale in cached[:-3]:
+                    if stale != self.analysis_path:
+                        stale.unlink(missing_ok=True)
+            else:
+                target.touch()
             image = load_preview(target).values
             analysis_path = target
         valid = preview.valid & np.isfinite(image)
@@ -1097,6 +1130,9 @@ class MainWindow(QMainWindow):
                 result_index = self.result_view_box.findData(display.get("result"))
                 if result_index >= 0:
                     self.result_view_box.setCurrentIndex(result_index)
+                    selected = display.get("result")
+                    if isinstance(selected, str) and selected.startswith("post:"):
+                        self._refresh_class_groups(self.postprocessed_results_by_algorithm[selected[5:]])
             else:
                 self.show_error("Результаты проекта относятся к другой геометрии DEM")
         self.refresh_result_choices()
@@ -1124,6 +1160,10 @@ class MainWindow(QMainWindow):
                 "display": {"layer": self.parameters.get("layer", "elevation"),
                             "algorithm": self.algorithm_box.currentData(),
                             "result": self.result_view_box.currentData(),
+                            "terrain_parameters": {
+                                key: self.parameters[key] for key in ("vertical_scale", "elevation_unit")
+                                if key in self.parameters
+                            },
                             **self._ui_parameters()},
             })
         except (OSError, TypeError, ValueError) as error:
@@ -1146,7 +1186,12 @@ class MainWindow(QMainWindow):
             self.show_error(TEXT[self.language]["project_error"].format(error))
             return
         self.pending_project = state
-        if not self.load_path(state["dem_path"]):
+        display = state.get("display", {})
+        kind = display.get("layer", "elevation")
+        if kind not in TERRAIN_MODES:
+            kind = "elevation"
+        if not self.load_path(state["dem_path"], kind=kind,
+                              parameters=display.get("terrain_parameters", {})):
             self.pending_project = None
 
     def _ui_parameters(self):
@@ -1269,6 +1314,7 @@ class MainWindow(QMainWindow):
         self.endpoints.clear()
         self.comparison.clear_results()
         self.validation.clear_results()
+        self.unique_candidates.clear()
 
     def analysis_options(self):
         return {
@@ -1346,6 +1392,13 @@ class MainWindow(QMainWindow):
         p = self._selected_parameters(algorithm)
         dem = self.analysis_options()["preview"]
         orientation = self.orientation_response.isChecked()
+        band = self.response_band.value()
+        if band:
+            self.start_task(
+                lambda _progress, cancel: detector_component(dem, algorithm, band - 1, p, cancel=cancel),
+                self.accept_component,
+            )
+            return
         self.start_task(
             lambda progress, cancel: (
                 detector_response(dem, algorithm, p, progress=progress, cancel=cancel)[1],
@@ -1354,6 +1407,18 @@ class MainWindow(QMainWindow):
             self.accept_response,
         )
 
+    def accept_component(self, payload):
+        angle, coefficient = payload
+        valid = np.isfinite(coefficient)
+        raster = np.zeros(coefficient.shape, np.uint8)
+        if valid.any():
+            limit = np.percentile(abs(coefficient[valid]), 98)
+            raster[valid] = np.clip(127.5 * (1 + coefficient[valid] / max(limit, 1e-12)), 0, 255)
+        self.show_response_raster(raster)
+        note = (("Низкие частоты", "Low-pass")[self.language == "en"]
+                if angle is None else f"{np.rad2deg(angle):.1f}°")
+        self.statusBar().showMessage(f"{self.response_band.value()} · {note}")
+
     def accept_response(self, payload):
         response, orientation = payload
         if orientation:
@@ -1361,16 +1426,20 @@ class MainWindow(QMainWindow):
             image = np.stack([(0.5 + .5 * np.cos(2 * angle + phase)) * response.strength
                               for phase in (0, 2 * np.pi / 3, 4 * np.pi / 3)], axis=-1)
             raster = np.ascontiguousarray(np.clip(image * 255, 0, 255).astype(np.uint8))
-            height, width = raster.shape[:2]
-            qimage = QImage(raster.data, width, height, 3 * width, QImage.Format.Format_RGB888)
         else:
             raster = np.ascontiguousarray((response.strength * 255).astype(np.uint8))
-            height, width = raster.shape
+        self.show_response_raster(raster)
+        self.statusBar().showMessage(self.response_button.text())
+
+    def show_response_raster(self, raster):
+        height, width = raster.shape[:2]
+        if raster.ndim == 3:
+            qimage = QImage(raster.data, width, height, 3 * width, QImage.Format.Format_RGB888)
+        else:
             qimage = QImage(raster.data, width, height, width, QImage.Format.Format_Grayscale8)
         self.scene.clear()
         self.scene.addPixmap(QPixmap.fromImage(qimage.copy()))
         self.draw_result_overlays()
-        self.statusBar().showMessage(self.response_button.text())
 
     def run_detection(self, _checked=False, *, endpoints=None):
         if self.dem is None or self.image is None:
@@ -1395,6 +1464,9 @@ class MainWindow(QMainWindow):
     def accept_detection(self, result: DetectionResult):
         if self.closing:
             return
+        self.comparison.clear_results()
+        self.validation.clear_results()
+        self.unique_candidates.clear()
         self.results_by_algorithm.pop("consensus", None)
         for key in (result.algorithm_id, "consensus"):
             self.postprocessed_results_by_algorithm.pop(key, None)
@@ -1417,13 +1489,9 @@ class MainWindow(QMainWindow):
         selected = self.result_view_box.currentData() if self.result_view_box.count() else "all"
         if selected == "all":
             overlays = [(key, value, False) for key, value in self.results_by_algorithm.items()]
-        elif isinstance(selected, str) and selected.startswith("post:"):
-            algorithm_id = selected[5:]
-            value = self.postprocessed_results_by_algorithm.get(algorithm_id)
-            overlays = [(algorithm_id, value, True)] if value is not None else []
         else:
-            value = self.results_by_algorithm.get(selected)
-            overlays = [(selected, value, False)] if value is not None else []
+            value = self.selected_result(selected)
+            overlays = [(value.algorithm_id, value, bool(value.postprocessing_parameters))] if value else []
         for algorithm_id, result, is_postprocessed in overlays:
             paths = {}
             colors = {}
@@ -1544,6 +1612,21 @@ class MainWindow(QMainWindow):
         self.class_visibility[item.text()] = item.checkState() == Qt.CheckState.Checked
         self.draw_result_overlays()
 
+    def selected_result(self, selection):
+        if isinstance(selection, str) and selection.startswith("post:"):
+            return self.postprocessed_results_by_algorithm.get(selection[5:])
+        if isinstance(selection, str) and selection.startswith("unique:"):
+            algorithm = selection[7:]
+            result = self.results_by_algorithm.get(algorithm)
+            if result:
+                ids = set(self.unique_candidates.get(algorithm, ()))
+                return replace(result, segments=tuple(
+                    line for i, line in enumerate(result.segments)
+                    if line.properties.get("object_id", i) in ids
+                ))
+            return None
+        return self.results_by_algorithm.get(selection)
+
     def save_geojson(self):
         if self.dem is None or not (self.results_by_algorithm or self.postprocessed_results_by_algorithm):
             return
@@ -1559,9 +1642,7 @@ class MainWindow(QMainWindow):
             results = (
                 list(self.results_by_algorithm.values()) + list(self.postprocessed_results_by_algorithm.values())
                 if selected == "all"
-                else [self.postprocessed_results_by_algorithm[selected[5:]]]
-                if isinstance(selected, str) and selected.startswith("post:")
-                else [self.results_by_algorithm[selected]]
+                else [self.selected_result(selected)]
             )
             dem = self.dem
             self.start_task(

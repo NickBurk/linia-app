@@ -294,8 +294,8 @@ def _dem_from_result(result: DetectionResult) -> Dem:
 
     crs = CRS.from_wkt(result.source_crs_wkt) if result.source_crs_wkt else None
     return Dem(
-        values=np.zeros(result.source_shape, dtype=np.uint8),
-        valid=np.ones(result.source_shape, dtype=bool),
+        values=np.broadcast_to(np.uint8(0), result.source_shape),
+        valid=np.broadcast_to(True, result.source_shape),
         transform=Affine(*result.source_transform),
         crs=crs,
         path=None,

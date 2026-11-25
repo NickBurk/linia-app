@@ -18,6 +18,7 @@ from lineament_analyzer.algorithms.filter_banks import (
     LogGaborParameters,
     ShearletParameters,
     WaveletParameters,
+    filter_component,
     response_map,
 )
 from lineament_analyzer.algorithms.lsd import LsdDetector, LsdParameters
@@ -181,7 +182,7 @@ def _windowed(path, method, algorithm, p, limit, progress, cancel):
 
 def run_detector(
     source, algorithm, parameters=None, *, resolution="preview", preview=None,
-    memory_mib=512, working_path=None, endpoints=None, progress=None, cancel=None,
+    memory_mib=1024, working_path=None, endpoints=None, progress=None, cancel=None,
 ):
     """Run from a GeoTIFF path or Dem, recording input and actual processing grid.
 
@@ -286,3 +287,10 @@ def detector_response(source, algorithm, parameters=None, *, progress=None, canc
     dem = source if isinstance(source, Dem) else load_preview(source)
     p = parameters if parameters is not None else method.parameters()
     return dem, response_map(dem, p, algorithm, progress=progress, cancel=cancel)
+
+
+def detector_component(source, algorithm, index, parameters=None, *, cancel=None):
+    """Inspect a zero-based band on the same bounded raster used for response maps."""
+    dem = source if isinstance(source, Dem) else load_preview(source)
+    p = parameters if parameters is not None else METHODS[algorithm].parameters()
+    return filter_component(dem, p, algorithm, index, cancel=cancel)

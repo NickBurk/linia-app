@@ -40,12 +40,17 @@ def detect(image: np.ndarray, valid: np.ndarray, params: LsdParameters) -> np.nd
     if lines is None:
         return np.empty((0, 4), dtype=float)
     segments = lines.reshape(-1, 4).astype(float)
+    # Native subpixel estimates can fall a fraction outside the outermost
+    # centre despite having valid mask samples. Clamp to actual raster centres
+    # before applying length and shared-result validation.
+    segments[:, (0, 2)] = np.clip(segments[:, (0, 2)], 0, raster.shape[1] - 1)
+    segments[:, (1, 3)] = np.clip(segments[:, (1, 3)], 0, raster.shape[0] - 1)
     lengths = np.hypot(segments[:, 2] - segments[:, 0], segments[:, 3] - segments[:, 1])
     # Reject segments whose full support touches NoData, including the detector's
     # interpolation footprint. Preserve support at the actual image border.
     safe = binary_erosion(finite, iterations=max(2, int(np.ceil(2 / params.scale))), border_value=1)
     accepted = []
-    for segment in segments[lengths >= params.min_length]:
+    for segment in segments[(lengths >= params.min_length) & (lengths > 0)]:
         x1, y1, x2, y2 = segment
         samples = max(2, int(np.ceil(np.hypot(x2 - x1, y2 - y1) * 2)) + 1)
         x = np.rint(np.linspace(x1, x2, samples)).astype(int)

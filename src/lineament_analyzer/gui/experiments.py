@@ -262,7 +262,14 @@ class ExperimentPanel(QWidget):
 
     def accept(self, response):
         raw, post, unique, self.report = response
+        self.window.unique_candidates = unique
         self.report["unique_candidates"] = unique
+        self.report["consensus_support"] = [
+            dict(line.properties) for line in raw["consensus"].segments
+        ] if "consensus" in raw else []
+        self.window.results_by_algorithm.pop("consensus", None)
+        for key in (*raw, "consensus"):
+            self.window.postprocessed_results_by_algorithm.pop(key, None)
         self.window.results_by_algorithm.update(raw)
         self.window.postprocessed_results_by_algorithm.update({
             result.algorithm_id: result for result in post.values()
@@ -300,6 +307,18 @@ class ExperimentPanel(QWidget):
                 table.setItem(row_index, column, QTableWidgetItem(label))
         table.resizeColumnsToContents()
         tabs.addTab(table, ("Таблица", "Table")[self.window.language == "en"])
+        if self.report["consensus_support"]:
+            headers = ("ID", ("Методы", "Methods")[self.window.language == "en"],
+                       ("Семейства", "Families")[self.window.language == "en"])
+            agreement = QTableWidget(len(self.report["consensus_support"]), len(headers))
+            agreement.setHorizontalHeaderLabels(headers)
+            agreement.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            for index, item in enumerate(self.report["consensus_support"]):
+                for col, value in enumerate((item["object_id"], ", ".join(item["supporting_algorithms"]),
+                                             ", ".join(item["supporting_families"]))):
+                    agreement.setItem(index, col, QTableWidgetItem(value))
+            agreement.resizeColumnsToContents()
+            tabs.addTab(agreement, "Consensus")
         if self.report["dataset"]:
             tabs.addTab(AccuracyChart(rows), "Precision / Recall / F1")
             details = QWidget()

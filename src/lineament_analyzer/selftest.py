@@ -1,6 +1,9 @@
 """Exercise the installed or frozen desktop application with self-contained data."""
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
@@ -38,6 +41,23 @@ def _window(errors):
     QApplication.processEvents()
     assert window.isVisible()
     return window
+
+
+def restore_in_new_process(project):
+    """Verify a prior process's project with a fresh QApplication and settings."""
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(project.parent))
+    errors = []
+    restored = _window(errors)
+    restored.open_project_path(project)
+    _wait(restored, errors)
+    assert Path(restored.source) == project.parent / "input" / "synthetic.tif"
+    assert set(METHODS).issubset(restored.results_by_algorithm)
+    assert restored.results_by_algorithm["lsd"].segments
+    assert restored.parameters["layer"] == "hillshade"
+    restored.close()
+    QApplication.processEvents()
+    return 0
 
 
 def run():
@@ -107,6 +127,8 @@ def run():
             with fiona.open(target) as vector:
                 assert len(vector) == len(result.segments) and vector.crs
 
+        window.layer.setCurrentIndex(1)
+        _wait(window, errors)
         project = root / "self-test.laproj"
         window.project_path = str(project)
         window.save_project()
@@ -115,12 +137,12 @@ def run():
         QApplication.processEvents()
         assert not window.isVisible()
 
-        restored = _window(errors)
-        restored.open_project_path(project)
-        _wait(restored, errors)
-        assert restored.source == dataset.dem_path
-        assert set(METHODS).issubset(restored.results_by_algorithm)
-        assert restored.results_by_algorithm["lsd"].segments
-        restored.close()
-        QApplication.processEvents()
+        command = [sys.executable]
+        if not getattr(sys, "frozen", False):
+            command.extend(("-m", "lineament_analyzer.app"))
+        command.extend(("--self-test-restore", str(project)))
+        subprocess.run(
+            command, check=True, timeout=90,
+            env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"},
+        )
     return 0

@@ -55,3 +55,20 @@ def test_response_and_detections(method, p, vertical):
         assert line.coordinates[0] == dem.transform * tuple(np.array(line.pixels[0]) + 0.5)
     with pytest.raises(CancelledError):
         detector.run(dem, p, cancel=lambda: True)
+
+
+def test_individual_wavelet_band_on_native_pixel_grid():
+    from lineament_analyzer.engine import detector_component
+
+    y, x = np.indices((48, 52))
+    values = np.exp(-((y - 25)**2 + (x * 0.01)**2) / 3)
+    valid = np.ones(values.shape, dtype=bool)
+    valid[7:10, 7:10] = False
+    dem = Dem(values, valid, Affine.identity(), None, Path("wavelet.tif"))
+    angle, band = detector_component(dem, "wavelet", 0)
+    assert angle == 0
+    assert band.shape == values.shape
+    assert np.isnan(band[~valid]).all()
+    assert band[25, 25] > 0
+    with pytest.raises(ValueError, match="does not exist"):
+        detector_component(dem, "wavelet", 99)
