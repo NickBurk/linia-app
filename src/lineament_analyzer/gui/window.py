@@ -1,16 +1,18 @@
 """Main Qt window for georeferenced line detection and comparison."""
 
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor, QImage, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -48,6 +51,7 @@ from lineament_analyzer.core.windowed import check_cancel, process_dem
 from lineament_analyzer.data.dem import Dem, load_preview
 from lineament_analyzer.export.geojson import export_geojson
 from lineament_analyzer.export.shapefile import export_shapefile
+from lineament_analyzer.gui.project import load_project, save_project
 from lineament_analyzer.gui.tasks import Task
 
 TEXT = {
@@ -104,6 +108,23 @@ TEXT = {
         "cancel": "Отмена",
         "saved": "GeoJSON сохранён",
         "cancelled": "Отменено",
+        "missing_dem": "Файл DEM не найден: {}", "no_dem": "DEM не загружена",
+        "menu_file": "Файл", "menu_view": "Вид", "menu_analysis": "Анализ",
+        "menu_export": "Экспорт", "menu_help": "Справка", "new_project": "Новый проект",
+        "open_project": "Открыть проект…", "save_project": "Сохранить проект",
+        "save_as": "Сохранить проект как…", "close_dem": "Закрыть DEM",
+        "restore": "Автовосстановление последнего DEM", "zoom": "Масштабировать к данным",
+        "reset_panels": "Сбросить панели", "terrain": "Анализ рельефа",
+        "compare": "Сравнить результаты", "about": "О программе",
+        "guide": "Руководство пользователя", "tab_data": "Данные",
+        "tab_detection": "Обнаружение", "tab_post": "Постобработка",
+        "tab_stats": "Статистика", "save_ok": "Проект сохранён",
+        "project_error": "Не удалось открыть проект: {}", "layers": "Панель слоёв",
+        "properties": "Панель свойств", "exit": "Выход", "shapefile": "Shapefile",
+        "open_dem_title": "Открыть DEM", "open_project_title": "Открыть проект",
+        "save_project_title": "Сохранить проект", "about_text": "Анализ DEM и геологических линеаментов",
+        "guide_text": "Откройте GeoTIFF DEM, выберите алгоритм и запустите обнаружение.",
+        "resolution": "Разрешение", "range": "Диапазон",
     },
     "en": {
         "open": "Open GeoTIFF",
@@ -158,6 +179,23 @@ TEXT = {
         "cancel": "Cancel",
         "saved": "GeoJSON saved",
         "cancelled": "Cancelled",
+        "missing_dem": "DEM file not found: {}", "no_dem": "No DEM loaded",
+        "menu_file": "File", "menu_view": "View", "menu_analysis": "Analysis",
+        "menu_export": "Export", "menu_help": "Help", "new_project": "New project",
+        "open_project": "Open project…", "save_project": "Save project",
+        "save_as": "Save project as…", "close_dem": "Close DEM",
+        "restore": "Restore last DEM automatically", "zoom": "Zoom to data",
+        "reset_panels": "Reset panels", "terrain": "Terrain analysis",
+        "compare": "Compare results", "about": "About", "guide": "User guide",
+        "tab_data": "Data", "tab_detection": "Detection",
+        "tab_post": "Postprocessing", "tab_stats": "Statistics",
+        "save_ok": "Project saved", "project_error": "Could not open project: {}",
+        "layers": "Layers panel", "properties": "Properties panel",
+        "exit": "Exit", "shapefile": "Shapefile",
+        "open_dem_title": "Open DEM", "open_project_title": "Open project",
+        "save_project_title": "Save project", "about_text": "DEM and geological lineament analysis",
+        "guide_text": "Open a GeoTIFF DEM, choose a detector and start detection.",
+        "resolution": "Resolution", "range": "Range",
     },
 }
 
@@ -167,6 +205,15 @@ ALGORITHM_COLORS = {
     "canny-hough": Qt.GlobalColor.darkGreen,
     "edlines": Qt.GlobalColor.blue,
 }
+
+
+class MapCanvas(QGraphicsView):
+    """Aspect-preserving raster canvas with wheel zoom and hand panning."""
+
+    def wheelEvent(self, event):
+        factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
+        self.scale(factor, factor)
+        event.accept()
 
 
 class MainWindow(QMainWindow):
@@ -187,8 +234,11 @@ class MainWindow(QMainWindow):
         self.class_visibility: dict[str, bool] = {}
         self.last_statistics = None
         self.language = "ru"
+        self.settings = QSettings("NickBurk", "LineamentAnalyzer")
+        self.project_path = None
+        self.pending_project = None
         self.scene = QGraphicsScene(self)
-        self.view = QGraphicsView(self.scene)
+        self.view = MapCanvas(self.scene)
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
 
         self.open_button = QPushButton()
@@ -305,20 +355,224 @@ class MainWindow(QMainWindow):
         ):
             processing.addWidget(widget)
 
-        layout = QVBoxLayout()
-        layout.addLayout(controls)
-        layout.addWidget(self.parameter_stack)
-        layout.addWidget(self.postprocess_group)
-        layout.addWidget(self.class_label)
-        layout.addWidget(self.class_group_list)
-        layout.addWidget(self.statistics_label)
-        layout.addLayout(processing)
-        layout.addWidget(self.view)
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
+        self._build_workspace(controls, processing)
         self.resize(1250, 820)
-        self.change_language(0)
+        language_index = 1 if self.settings.value("language", "ru") == "en" else 0
+        self.language_box.blockSignals(True)
+        self.language_box.setCurrentIndex(language_index)
+        self.language_box.blockSignals(False)
+        self.change_language(language_index)
+        algorithm_index = self.algorithm_box.findData(self.settings.value("algorithm", "lsd"))
+        if algorithm_index >= 0:
+            self.algorithm_box.setCurrentIndex(algorithm_index)
+        geometry = self.settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        state = self.settings.value("windowState")
+        if state:
+            self.restoreState(state)
+        self.restore_action.setChecked(self.settings.value("autoRestore", False, type=bool))
+        last_dem = self.settings.value("lastDem", "")
+        if self.restore_action.isChecked() and last_dem:
+            if Path(last_dem).is_file():
+                self.load_path(last_dem)
+            else:
+                self.statusBar().showMessage(TEXT[self.language]["missing_dem"].format(last_dem))
+
+    def _build_workspace(self, controls, processing):
+        """Arrange the existing controls around a large, aspect-safe map canvas."""
+        self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setCentralWidget(self.view)
+
+        self.layer_tree = QListWidget()
+        self.layer_tree.itemDoubleClicked.connect(self._activate_layer_item)
+        self.layer_tree.setToolTip("DEM и вычисляемые представления рельефа")
+        layer_dock = QDockWidget(self)
+        layer_dock.setObjectName("layersDock")
+        layer_dock.setWidget(self.layer_tree)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, layer_dock)
+        self.layers_dock = layer_dock
+
+        tabs = QTabWidget()
+        data_page = QWidget()
+        data_layout = QVBoxLayout(data_page)
+        data_layout.addWidget(self.open_button)
+        data_layout.addLayout(processing)
+        self.data_info = QLabel("DEM не загружена")
+        self.data_info.setWordWrap(True)
+        data_layout.addWidget(self.data_info)
+        data_layout.addStretch(1)
+        tabs.addTab(data_page, "Данные")
+
+        detection_page = QWidget()
+        detect_layout = QVBoxLayout(detection_page)
+        detect_form = QFormLayout()
+        detect_form.addRow(self.layer_label, self.layer)
+        detect_form.addRow(self.algorithm_label, self.algorithm_box)
+        detect_form.addRow(self.parameter_stack)
+        detect_form.addRow(self.result_label, self.result_view_box)
+        detect_layout.addLayout(detect_form)
+        detect_layout.addWidget(self.detect_button)
+        detect_layout.addWidget(self.cancel_button)
+        detect_layout.addStretch(1)
+        tabs.addTab(detection_page, "Обнаружение")
+
+        post_page = QWidget()
+        post_layout = QVBoxLayout(post_page)
+        post_layout.addWidget(self.postprocess_group)
+        post_layout.addWidget(self.postprocess_button)
+        post_layout.addWidget(self.class_label)
+        post_layout.addWidget(self.class_group_list)
+        post_layout.addStretch(1)
+        tabs.addTab(post_page, "Постобработка")
+
+        stats_page = QWidget()
+        stats_layout = QVBoxLayout(stats_page)
+        stats_layout.addWidget(self.statistics_label)
+        stats_layout.addStretch(1)
+        tabs.addTab(stats_page, "Статистика")
+        props_dock = QDockWidget(self)
+        props_dock.setObjectName("propertiesDock")
+        props_dock.setWidget(tabs)
+        props_dock.setMinimumWidth(300)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, props_dock)
+        self.properties_dock = props_dock
+        self.property_tabs = tabs
+
+        self._build_menus()
+        toolbar = self.addToolBar("Main")
+        toolbar.setObjectName("mainToolbar")
+        toolbar.setMovable(False)
+        toolbar.addAction(self.open_dem_action)
+        toolbar.addAction(self.save_project_action)
+        toolbar.addAction(self.zoom_action)
+        toolbar.addAction(self.detect_action)
+        toolbar.addAction(self.postprocess_action)
+        toolbar.addAction(self.export_action)
+        self.progress = QProgressBar()
+        self.progress.setMaximumWidth(160)
+        self.statusBar().addPermanentWidget(self.progress)
+
+    def _build_menus(self):
+        self.file_menu = self.menuBar().addMenu("")
+        self.new_project_action = self.file_menu.addAction("")
+        self.new_project_action.triggered.connect(self.new_project)
+        self.open_project_action = self.file_menu.addAction("")
+        self.open_project_action.triggered.connect(self.open_project)
+        self.save_project_action = self.file_menu.addAction("")
+        self.save_project_action.triggered.connect(self.save_project)
+        self.save_as_action = self.file_menu.addAction("")
+        self.save_as_action.triggered.connect(self.save_project_as)
+        self.file_menu.addSeparator()
+        self.open_dem_action = self.file_menu.addAction("")
+        self.open_dem_action.triggered.connect(self.open_file)
+        self.close_dem_action = self.file_menu.addAction("")
+        self.close_dem_action.triggered.connect(self.close_dem)
+        self.file_menu.addSeparator()
+        self.restore_action = self.file_menu.addAction("")
+        self.restore_action.setCheckable(True)
+        self.restore_action.toggled.connect(lambda value: self.settings.setValue("autoRestore", value))
+        self.exit_action = self.file_menu.addAction("")
+        self.exit_action.triggered.connect(self.close)
+
+        self.view_menu = self.menuBar().addMenu("")
+        self.layers_toggle_action = self.layers_dock.toggleViewAction()
+        self.properties_toggle_action = self.properties_dock.toggleViewAction()
+        self.view_menu.addAction(self.layers_toggle_action)
+        self.view_menu.addAction(self.properties_toggle_action)
+        self.zoom_action = self.view_menu.addAction("")
+        self.zoom_action.triggered.connect(self.zoom_to_dem)
+        self.reset_panels_action = self.view_menu.addAction("")
+        self.reset_panels_action.triggered.connect(self.reset_panels)
+
+        self.analysis_menu = self.menuBar().addMenu("")
+        self.terrain_action = self.analysis_menu.addAction("")
+        self.terrain_action.triggered.connect(lambda: self.property_tabs.setCurrentIndex(0))
+        self.detect_action = self.analysis_menu.addAction("")
+        self.detect_action.triggered.connect(self.run_detection)
+        self.postprocess_action = self.analysis_menu.addAction("")
+        self.postprocess_action.triggered.connect(self.run_postprocessing)
+        self.compare_action = self.analysis_menu.addAction("")
+        self.compare_action.triggered.connect(lambda: self.result_view_box.setCurrentIndex(0))
+
+        export_menu = self.menuBar().addMenu("")
+        self.export_action = export_menu.addAction("")
+        self.export_action.triggered.connect(self.save_geojson)
+        self.shapefile_action = export_menu.addAction("Shapefile")
+        self.shapefile_action.triggered.connect(self._select_shapefile)
+        self.help_menu = self.menuBar().addMenu("")
+        self.about_action = self.help_menu.addAction("")
+        self.about_action.triggered.connect(self.about)
+        self.guide_action = self.help_menu.addAction("")
+        self.guide_action.triggered.connect(self.user_guide)
+
+    def _activate_layer_item(self, item):
+        key = item.data(Qt.ItemDataRole.UserRole)
+        if key in {"elevation", "hillshade", "slope", "aspect", "tpi"}:
+            self.layer.setCurrentIndex(["elevation", "hillshade", "slope", "aspect", "tpi"].index(key))
+        elif key in ALGORITHM_NAMES or isinstance(key, str) and key.startswith("post:"):
+            index = self.result_view_box.findData(key)
+            if index >= 0:
+                self.result_view_box.setCurrentIndex(index)
+
+    def _refresh_layers(self):
+        self.layer_tree.clear()
+        if self.source:
+            item = QListWidgetItem(f"DEM — {Path(self.source).name}")
+            item.setData(Qt.ItemDataRole.UserRole, "elevation")
+            self.layer_tree.addItem(item)
+            kind = self.parameters.get("layer", "elevation")
+            names = {"hillshade": "Hillshade", "slope": "Slope", "aspect": "Aspect", "tpi": "TPI"}
+            if kind in names:
+                item = QListWidgetItem(names[kind])
+                item.setData(Qt.ItemDataRole.UserRole, kind)
+                self.layer_tree.addItem(item)
+        for algorithm_id in self.results_by_algorithm:
+            item = QListWidgetItem(ALGORITHM_NAMES[algorithm_id])
+            item.setData(Qt.ItemDataRole.UserRole, algorithm_id)
+            self.layer_tree.addItem(item)
+        for algorithm_id in self.postprocessed_results_by_algorithm:
+            item = QListWidgetItem(f"{ALGORITHM_NAMES.get(algorithm_id, algorithm_id)} · post")
+            item.setData(Qt.ItemDataRole.UserRole, f"post:{algorithm_id}")
+            self.layer_tree.addItem(item)
+    def _select_shapefile(self):
+        self.export_format.setCurrentIndex(1)
+        self.save_geojson()
+
+    def about(self):
+        QMessageBox.about(self, "Lineament Analyzer", TEXT[self.language]["about_text"])
+
+    def user_guide(self):
+        QMessageBox.information(self, "Lineament Analyzer", TEXT[self.language]["guide_text"])
+
+    def reset_panels(self):
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.layers_dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
+        self.layers_dock.show()
+        self.properties_dock.show()
+
+    def zoom_to_dem(self):
+        if self.scene.sceneRect().isValid():
+            self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def close_dem(self):
+        if self.task is not None:
+            return
+        self.source = self.dem = self.image = None
+        self.parameters.clear()
+        self.results_by_algorithm.clear()
+        self.postprocessed_results_by_algorithm.clear()
+        self.scene.clear()
+        self.scene.setSceneRect(0, 0, 1, 1)
+        self.data_info.setText(TEXT[self.language]["no_dem"])
+        self._refresh_layers()
+        self.refresh_result_choices()
+
+    def new_project(self):
+        self.close_dem()
+        self.project_path = None
 
     def _spin(self, minimum, maximum, value, *, decimals=0, step=None):
         control = QDoubleSpinBox() if decimals else QSpinBox()
@@ -442,6 +696,28 @@ class MainWindow(QMainWindow):
         self.unit_label.setText(labels["units"])
         self.apply_button.setText(labels["apply"])
         self.cancel_button.setText(labels["cancel"])
+        self.settings.setValue("language", self.language)
+        self.file_menu.setTitle(labels["menu_file"])
+        self.view_menu.setTitle(labels["menu_view"])
+        self.analysis_menu.setTitle(labels["menu_analysis"])
+        self.menuBar().actions()[3].setText(labels["menu_export"])
+        self.help_menu.setTitle(labels["menu_help"])
+        for action, key in (
+            (self.new_project_action, "new_project"), (self.open_project_action, "open_project"),
+            (self.save_project_action, "save_project"), (self.save_as_action, "save_as"),
+            (self.open_dem_action, "open"), (self.close_dem_action, "close_dem"),
+            (self.restore_action, "restore"), (self.zoom_action, "zoom"),
+            (self.detect_action, "run"), (self.postprocess_action, "run_postprocess"),
+            (self.export_action, "export"),
+            (self.layers_toggle_action, "layers"), (self.properties_toggle_action, "properties"),
+            (self.reset_panels_action, "reset_panels"), (self.terrain_action, "terrain"),
+            (self.compare_action, "compare"), (self.about_action, "about"),
+            (self.guide_action, "guide"), (self.shapefile_action, "shapefile"),
+            (self.exit_action, "exit"),
+        ):
+            action.setText(labels[key])
+        for tab_index, key in enumerate(("tab_data", "tab_detection", "tab_post", "tab_stats")):
+            self.property_tabs.setTabText(tab_index, labels[key])
 
         selected_algorithm = self.algorithm_box.currentData() or "lsd"
         self.algorithm_box.blockSignals(True)
@@ -575,6 +851,12 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.cache.cleanup()
+        self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("windowState", self.saveState())
+        self.settings.setValue("algorithm", self.algorithm_box.currentData() or "lsd")
+        if self.source:
+            self.settings.setValue("lastDem", self.source)
+        self.settings.sync()
         event.accept()
 
     def open_file(self):
@@ -583,10 +865,17 @@ class MainWindow(QMainWindow):
             self.load_path(path)
 
     def load_path(self, path):
+        if self.task is not None:
+            return False
+        path = str(Path(path).expanduser().resolve())
+        if not Path(path).is_file():
+            self.show_error(TEXT[self.language]["missing_dem"].format(path))
+            return False
         self.start_task(
             lambda progress, cancel: self.prepare_layer(path, "elevation", {}, cancel, progress),
             self.accept_layer,
         )
+        return True
 
     def prepare_layer(self, path, kind, parameters, cancel, progress):
         preview = load_preview(path)
@@ -603,7 +892,7 @@ class MainWindow(QMainWindow):
             low, high = np.percentile(image[valid], [2, 98])
             gray[valid] = np.clip((image[valid] - low) / max(high - low, 1e-12) * 255, 0, 255)
         check_cancel(cancel)
-        return path, kind, parameters, preview, image, gray
+        return str(Path(path).resolve()), kind, parameters, preview, image, gray
 
     def render(self):
         if self.source is None:
@@ -640,7 +929,81 @@ class MainWindow(QMainWindow):
         self.scene.addItem(QGraphicsPixmapItem(QPixmap.fromImage(qimage)))
         self.scene.setSceneRect(0, 0, width, height)
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self._refresh_layers()
+        crs = self.dem.crs.to_string() if self.dem.crs else "unknown"
+        valid_values = self.dem.values[self.dem.valid]
+        labels = TEXT[self.language]
+        details = f"{Path(path).name}\n{width} × {height}\nCRS: {crs}\n{labels['resolution']}: {self.dem.resolution[0]:g} × {self.dem.resolution[1]:g}"
+        if valid_values.size:
+            details += f"\n{labels['range']}: {float(valid_values.min()):g} – {float(valid_values.max()):g}"
+        self.data_info.setText(details)
+        self.statusBar().showMessage(f"{Path(path).name} · {crs} · {width}×{height}")
+        self.settings.setValue("lastDem", path)
+        if self.pending_project:
+            state = self.pending_project
+            self.pending_project = None
+            results = list(state["detection_results"].values()) + list(state["postprocessed_results"].values())
+            matches = all(
+                value.source_shape == self.dem.values.shape
+                and value.source_transform == tuple(float(v) for v in tuple(self.dem.transform)[:6])
+                and value.source_crs_wkt == (self.dem.crs.to_wkt() if self.dem.crs else None)
+                for value in results
+            )
+            if matches:
+                self.results_by_algorithm = state["detection_results"]
+                self.postprocessed_results_by_algorithm = state["postprocessed_results"]
+                self.class_visibility = state["class_visibility"]
+                self.project_path = state.get("project_path")
+                display = state.get("display", {})
+                self.algorithm_box.setCurrentIndex(max(0, self.algorithm_box.findData(display.get("algorithm"))))
+            else:
+                self.show_error("Результаты проекта относятся к другой геометрии DEM")
         self.refresh_result_choices()
+
+    def save_project_as(self):
+        path, _ = QFileDialog.getSaveFileName(self, TEXT[self.language]["save_project_title"], "", "Project (*.laproj)")
+        if path:
+            if not path.endswith(".laproj"):
+                path += ".laproj"
+            self.project_path = path
+            self.save_project()
+
+    def save_project(self):
+        if self.dem is None:
+            return
+        if not self.project_path:
+            self.save_project_as()
+            return
+        try:
+            save_project(self.project_path, {
+                "dem_path": self.source,
+                "detection_results": self.results_by_algorithm,
+                "postprocessed_results": self.postprocessed_results_by_algorithm,
+                "class_visibility": self.class_visibility,
+                "display": {"layer": self.parameters.get("layer", "elevation"),
+                            "algorithm": self.algorithm_box.currentData(),
+                            "result": self.result_view_box.currentData()},
+            })
+        except (OSError, TypeError, ValueError) as error:
+            self.show_error(str(error))
+            return
+        self.statusBar().showMessage(TEXT[self.language]["save_ok"])
+
+    def open_project(self):
+        path, _ = QFileDialog.getOpenFileName(self, TEXT[self.language]["open_project_title"], "", "Project (*.laproj *.json)")
+        if not path:
+            return
+        try:
+            state = load_project(path)
+            state["project_path"] = path
+            if not Path(state["dem_path"]).is_file():
+                raise FileNotFoundError(TEXT[self.language]["missing_dem"].format(state["dem_path"]))
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+            self.show_error(TEXT[self.language]["project_error"].format(error))
+            return
+        self.pending_project = state
+        if not self.load_path(state["dem_path"]):
+            self.pending_project = None
 
     def _selected_parameters(self, algorithm_id):
         if algorithm_id == "lsd":
@@ -701,6 +1064,7 @@ class MainWindow(QMainWindow):
         if self.closing:
             return
         self.results_by_algorithm[result.algorithm_id] = result
+        self._refresh_layers()
         self.segments = result.as_pixel_array()
         self.parameters.update(
             algorithm_id=result.algorithm_id,
@@ -794,6 +1158,7 @@ class MainWindow(QMainWindow):
         result, stats = response
         self.last_statistics = stats
         self.postprocessed_results_by_algorithm[result.algorithm_id] = result
+        self._refresh_layers()
         self.class_visibility = {
             str(segment.properties.get("class_id", "unclassified")): self.class_visibility.get(
                 str(segment.properties.get("class_id", "unclassified")), True
