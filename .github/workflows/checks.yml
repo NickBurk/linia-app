@@ -19,8 +19,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -e '.[dev]'
-      - run: pyinstaller --noconfirm --onedir --windowed --name LineamentAnalyzer src/lineament_analyzer/app.py
+      - run: pyinstaller --noconfirm --onedir --windowed --name LineamentAnalyzer --collect-all rasterio --collect-all PySide6 src/lineament_analyzer/app.py
+      - run: Compress-Archive -Path dist/LineamentAnalyzer -DestinationPath dist/LineamentAnalyzer-Windows.zip
       - uses: actions/upload-artifact@v4
         with:
           name: LineamentAnalyzer-Windows
-          path: dist/LineamentAnalyzer/
+          path: dist/LineamentAnalyzer-Windows.zip

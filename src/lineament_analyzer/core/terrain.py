@@ -8,7 +8,12 @@ from lineament_analyzer.data.dem import Dem
 
 def derivative(dem: Dem, kind: str, *, azimuth: float = 315, altitude: float = 45,
                tpi_size: int = 9, vertical_scale: float = 1) -> np.ndarray:
-    """Calculate a terrain derivative, returning NaN at invalid pixels."""
+    """Calculate derivatives; gradients use one-sided differences at outer edges.
+
+    Gradients touching NoData are undefined. TPI averages available samples,
+    using nearest-edge extension. vertical_scale converts elevation units into
+    the horizontal CRS units.
+    """
     if dem.crs is not None and dem.crs.is_geographic:
         raise ValueError("Reproject geographic DEM to a projected CRS before terrain analysis")
     if vertical_scale <= 0 or tpi_size < 3 or tpi_size % 2 == 0:
@@ -20,12 +25,13 @@ def derivative(dem: Dem, kind: str, *, azimuth: float = 315, altitude: float = 4
         mean = uniform_filter(filled, size=tpi_size, mode="nearest") / np.maximum(count, 1e-12)
         result = z - mean
     else:
-        dy, dx = np.gradient(filled, dem.resolution[1], dem.resolution[0])
+        dy, dx = np.gradient(z, dem.resolution[1], dem.resolution[0])
         slope = np.arctan(np.hypot(dx, dy))
         if kind == "slope":
             result = np.degrees(slope)
         elif kind == "aspect":
             result = (np.degrees(np.arctan2(-dx, dy)) + 360) % 360
+            result[slope == 0] = np.nan
         elif kind == "hillshade":
             zenith = np.radians(90 - altitude)
             light = np.radians(azimuth)
