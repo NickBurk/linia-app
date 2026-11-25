@@ -9,8 +9,8 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import rasterio
 from affine import Affine
-from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QPointF, QSettings, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -1427,6 +1427,7 @@ class MainWindow(QMainWindow):
         for algorithm_id, result, is_postprocessed in overlays:
             paths = {}
             colors = {}
+            world_to_preview = ~self.dem.transform if self.dem else ~Affine(*result.source_transform)
             for segment in result.segments:
                 if is_postprocessed:
                     class_id = str(segment.properties.get("class_id", "unclassified"))
@@ -1442,11 +1443,9 @@ class MainWindow(QMainWindow):
                         color = QColor.fromHsv(hue, 215, 235)
                 path = paths.setdefault(class_id, QPainterPath())
                 colors[class_id] = color
-                world_to_preview = ~self.dem.transform if self.dem else ~Affine(*result.source_transform)
-                points = [world_to_preview * coordinate for coordinate in segment.coordinates]
-                path.moveTo(*points[0])
-                for point in points[1:]:
-                    path.lineTo(*point)
+                path.addPolygon(QPolygonF([
+                    QPointF(*(world_to_preview * coordinate)) for coordinate in segment.coordinates
+                ]))
             for group_id, path in paths.items():
                 pen = QPen(colors[group_id])
                 pen.setCosmetic(True)

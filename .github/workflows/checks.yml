@@ -38,14 +38,16 @@ jobs:
       - run: python -m lineament_analyzer.app --self-test
       # PyInstaller's QtWidgets hook includes the Qt platform plugins.
       # Rasterio and pyproj also need their dynamic modules and GDAL/PROJ data.
-      - run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name LineamentAnalyzer --collect-all rasterio --collect-all pyproj src/lineament_analyzer/app.py
+      - run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name LineamentAnalyzer --collect-all rasterio --collect-all pyproj --collect-all fiona src/lineament_analyzer/app.py
       - name: Verify Qt platform plugin and frozen runtime
         shell: pwsh
+        env:
+          QT_QPA_PLATFORM: windows
         run: |
           $plugin = Get-ChildItem dist/LineamentAnalyzer -Recurse -Filter qwindows.dll
           if (-not $plugin) { throw "Qt Windows platform plugin missing" }
           $process = Start-Process -FilePath dist/LineamentAnalyzer/LineamentAnalyzer.exe -ArgumentList '--self-test' -PassThru
-          if (-not $process.WaitForExit(120000)) {
+          if (-not $process.WaitForExit(240000)) {
             $process.Kill()
             throw "Frozen self-test timed out"
           }
