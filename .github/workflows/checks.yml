@@ -1,0 +1,26 @@
+name: Checks
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[dev]'
+      - run: QT_QPA_PLATFORM=offscreen pytest -q
+      - run: ruff check .
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[dev]'
+      - run: pyinstaller --noconfirm --onedir --windowed --name LineamentAnalyzer src/lineament_analyzer/app.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LineamentAnalyzer-Windows
+          path: dist/LineamentAnalyzer/
