@@ -140,6 +140,28 @@ def test_map_length_parameters_scale_across_dem_resolutions():
     assert all(length >= 500 for length in detected_lengths)
 
 
+def test_short_segments_are_filtered_using_metric_length():
+    import cv2
+
+    image = np.zeros((120, 180), dtype=float)
+    cv2.line(image, (15, 35), (60, 35), 100, 4)
+    cv2.line(image, (15, 85), (165, 85), 100, 4)
+    result = CannyHoughDetector().run(
+        make_dem(image), params(min_segment_length_m=300)
+    )
+    assert result.segments
+    assert all(segment.length_m >= 300 for segment in result.segments)
+    assert all(
+        not (
+            min(segment.pixel_start[0], segment.pixel_end[0]) <= 60
+            and max(segment.pixel_start[0], segment.pixel_end[0]) >= 15
+            and abs(segment.pixel_start[1] - 35) < 10
+            and abs(segment.pixel_end[1] - 35) < 10
+        )
+        for segment in result.segments
+    )
+
+
 def test_rotated_and_geographic_pixel_scale_and_no_crs_error():
     rotated = make_dem(
         np.zeros((20, 20)),

@@ -4,6 +4,7 @@ from lineament_analyzer.algorithms.canny_hough import (
     CannyHoughDetector,
     CannyHoughParameters,
 )
+from lineament_analyzer.algorithms.edlines import EdLinesDetector, EdLinesParameters
 from lineament_analyzer.algorithms.lsd import LsdDetector, LsdParameters
 from lineament_analyzer.algorithms.results import (
     DetectionResult,
@@ -16,6 +17,8 @@ __all__ = [
     "CannyHoughDetector",
     "CannyHoughParameters",
     "DetectionResult",
+    "EdLinesDetector",
+    "EdLinesParameters",
     "LineDetector",
     "LineSegment",
     "LsdDetector",
